@@ -471,3 +471,7 @@ details.act form.lead-edit .err:empty { display: none; }
 .btn.small.quiet:hover { color: var(--c-late); border-color: var(--c-late); }
 .quick-close { display: grid; gap: 10px; padding: 12px 16px; }
 .quick-close input[name="note"] { width: 100%; }
+/* Permanent patient delete (CHANGELOG-crm-patient-delete.md). */
+details.act.danger > summary { color: var(--bad); }
+.btn.small.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+.btn.small.danger:hover { filter: brightness(0.95); }

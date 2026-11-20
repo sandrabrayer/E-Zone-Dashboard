@@ -132,7 +132,7 @@ async function boot(options = {}) {
       actions.push({ action: parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (parsed.action === 'saveCredit') saves.push(parsed);
-      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'deletePatientRow', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
@@ -159,6 +159,7 @@ async function boot(options = {}) {
         : parsed.action === 'reportPayment' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, receipt: { id: 'rcpt-new' }, cycle: { id: parsed.report && parsed.report.cycle && parsed.report.cycle.id } })
         : parsed.action === 'appendFunder' ? { ok: true, row: { submissionId: parsed.funder && parsed.funder.submissionId } }
         : parsed.action === 'dischargePatient' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, patient: { id: String(parsed.patient && parsed.patient.id) }, refund: { created: 1 } })
+        : parsed.action === 'deletePatientRow' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, deleted: 1, id: String((parsed.patient && parsed.patient.id) || ''), key: 'synthetic-key', matchedBy: 'id' })
         : ['moveLeadIrrelevant', 'removeLead', 'restoreLead'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, lead: { id: String(parsed.lead && parsed.lead.id) } })
         : { ok: false, error: 'unexpected_' + parsed.action };
       const res = new EventEmitter();
@@ -2737,5 +2738,57 @@ test('«עריכת פרטי המטופל/ת» (CHANGELOG-crm-native-patient-edit
     assert.equal(await page.locator('#crm-drawer [data-open-linked-lead]').count(), 0);
     assert.equal(await noHScroll(page), true);
     assert.deepEqual(errors, []);
+  } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
+});
+
+test('מחיקת מטופל/ת (CHANGELOG-crm-patient-delete.md): finance+deleter deletes a patient in the CRM via the dedicated deletePatientRow action, confirmed, optimistic with rollback; the verifier and restricted roles never see it', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keepP = JSON.parse(JSON.stringify(DATA.patients));
+  DATA.patients.ramot.push({ id: 'pDel', name: 'דני למחיקה', date: daysAgo(30), status: 'active', pay: 8000 });
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    let answer = true;
+    page.on('dialog', (d) => { answer ? d.accept() : d.dismiss(); });
+    await page.click('#crm-nav button[data-area="clients"]');
+    // 1. the delete block is present for a deleter; a refused delete rolls back
+    await page.click('table.clients tr[data-open-patient="pDel"] td.name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act.danger summary');
+    saveAnswer = () => ({ ok: false, error: 'lock_busy', message: 'המערכת עסוקה, נסי שוב' });
+    await page.click('#crm-drawer [data-del-patient="pDel"]');
+    await toastIs(page, /המערכת עסוקה/);
+    assert.equal(await page.locator('table.clients tr[data-open-patient="pDel"]').count(), 1, 'the row is back after a failed delete');
+    // 2. a real delete: the dedicated action, the row gone
+    saveAnswer = null;
+    await page.click('table.clients tr[data-open-patient="pDel"] td.name');
+    await page.click('#crm-drawer details.act.danger summary');
+    await page.click('#crm-drawer [data-del-patient="pDel"]');
+    await toastIs(page, /מחיקת «דני למחיקה» — בוצע/);
+    const del = srv.saves.filter((x) => x.action === 'deletePatientRow');
+    assert.equal(del.length, 2, 'the refused attempt + the successful one — both the dedicated action, never a saveAll');
+    assert.deepEqual(del[1].patient, { id: 'pDel', houseId: 'ramot', name: 'דני למחיקה', date: daysAgo(30) });
+    assert.equal(srv.saves.filter((x) => x.action === 'saveAll').length, 0);
+    await page.waitForFunction(() => document.querySelector('#crm-drawer').getAttribute('aria-hidden') === 'true');
+    assert.equal(await page.locator('table.clients tr[data-open-patient="pDel"]').count(), 0, 'the row is gone');
+    // 3. declining the confirm sends nothing
+    DATA.patients.ramot.push({ id: 'pKeep', name: 'שרה נשארת', date: daysAgo(10), status: 'active', pay: 8000 });
+    await page.reload(); await page.click('#crm-nav button[data-area="clients"]');
+    await page.click('table.clients tr[data-open-patient="pKeep"] td.name');
+    await page.click('#crm-drawer details.act.danger summary');
+    answer = false;
+    const n = srv.saves.length;
+    await page.click('#crm-drawer [data-del-patient="pKeep"]');
+    await page.waitForTimeout(200);
+    assert.equal(srv.saves.length, n, 'declining the confirm posts nothing');
+    assert.deepEqual(errors, []);
+    // 4. a restricted user (Dana) never sees the delete control
+    const d = await open(browser, srv.port, 'dana', 1366);
+    await d.page.click('#crm-nav button[data-area="clients"]');
+    await d.page.click('table.clients tr[data-open-patient="pKeep"] td.name');
+    await d.page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    assert.equal(await d.page.locator('#crm-drawer [data-del-patient]').count(), 0, 'no delete for a non-deleter');
+    assert.deepEqual(d.errors, []);
   } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
 });

@@ -447,7 +447,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v147: CHANGELOG-crm-not-relevant-column.md (from v146).
   // v148: CHANGELOG-meeting-report-in-managers.md (from v147).
   // v149: CHANGELOG-crm-native-patient-edit.md (from v148).
-  assert.equal(v, 'v149');
+  // v150: CHANGELOG-crm-patient-delete.md (from v149).
+  assert.equal(v, 'v150');
   assert.notEqual(v, 'v17');
 });
 
