@@ -86,6 +86,19 @@ test('board + table share one filter; the table honours house aliases and owner;
   assert.ok(core.filterLeads(c.leads, {}).every((l) => l.stage !== 'admitted'));
 });
 
+test('board: newest leads first in each column (Sandra 20/11/2026)', () => {
+  const leads = [
+    { id: 'a', stage: 'new', created: '2026-11-18' },
+    { id: 'b', stage: 'new', created: '2026-11-19' },
+    { id: 'c', stage: 'new', created: '2026-11-19' },   // same day as b, appended later → ahead of it
+    { id: 'd', stage: 'new', created: '2026-11-20' },
+    { id: 'e', stage: 'visit', created: '2026-11-15' },
+  ];
+  const cols = core.board(leads, {});
+  assert.deepEqual(cols.find((x) => x.stage.id === 'new').leads.map((l) => l.id), ['d', 'c', 'b', 'a'], 'newest first; same-day in reverse append order');
+  assert.deepEqual(cols.find((x) => x.stage.id === 'visit').leads.map((l) => l.id), ['e']);
+});
+
 test('nextActionFor: stage, next action and alert are three different things', () => {
   const c = core.compute(DATA, TODAY);
   const by = Object.fromEntries(c.leads.map((l) => [l.id, l]));

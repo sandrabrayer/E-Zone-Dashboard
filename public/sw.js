@@ -447,7 +447,9 @@
 // (CHANGELOG-optional-lead-fields.md). From v154; monotonic.
 // v155 → v156: «החזרה לפעיל» on the released-patient card (reuses the «משוחררים»
 // restore flow). (CHANGELOG-crm-reactivate-card.md). From v155; monotonic.
-var CACHE_VERSION = 'v156';
+// v156 → v157: restore a mobile's lost leading 0 in the lead-edit form + newest
+// leads first in the board columns. (CHANGELOG-crm-leads-view-fixes.md). From v156; monotonic.
+var CACHE_VERSION = 'v157';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

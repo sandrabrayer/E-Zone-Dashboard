@@ -63,8 +63,26 @@ test('an old incomplete lead still saves its other fields (only a changed field 
   const old = Object.assign(LEAD(), { name: 'דנה', phone: '544668861', contactPhone: '544668861', source: '', house: '', created: '' });
   assert.deepEqual(plan(old, { note: 'עדכון' }), { errors: {}, patch: { note: 'עדכון' } });
   assert.deepEqual(plan(old, { assignedTo: '' }), { errors: {}, patch: { assignedTo: '' } });
-  // and it can be completed: a repaired phone is stored normalised
-  assert.deepEqual(plan(old, { phone: '0544668861', contactPhone: '054-4668861' }).patch, { phone: '0544668861', contactPhone: '0544668861' });
+  // the coerced legacy phones (missing their leading 0) now DISPLAY restored, so opening and
+  // saving untouched writes nothing; changing to a different number still patches, normalised
+  assert.deepEqual(plan(old, {}).patch, {}, 'restored display is the baseline — no stray patch on open');
+  assert.deepEqual(plan(old, { phone: '0501234567', contactPhone: '052-765 4321' }).patch, { phone: '0501234567', contactPhone: '0527654321' });
+});
+
+test('a mobile that lost its leading 0 in Sheets is restored for the edit form (Sandra 20/11/2026)', () => {
+  // the reported case: billingPhone coerced to a number (0525264094 → 525264094). It is the
+  // SAME number as the contact phone, so the billing selector must read «פונה», not «אחר»,
+  // and show no stray «טלפון אחר» — and the form restores every phone's leading 0
+  assert.equal(core.ilPhoneDisplay('525264094'), '0525264094');
+  assert.equal(core.ilPhoneDisplay('0525264094'), '0525264094', 'already valid — unchanged');
+  assert.equal(core.ilPhoneDisplay('036543210'), '036543210', 'a landline is left as it is');
+  assert.equal(core.ilPhoneDisplay(''), '');
+  const lead = Object.assign(LEAD(), { phone: '', contactPhone: '0525264094', billingPhone: '525264094' });
+  assert.deepEqual(core.billingModeOf(lead), { mode: 'contact', other: '' }, 'reads «פונה», no stray «אחר»');
+  const v = core.leadEditValues(lead);
+  assert.equal(v.billingMode, 'contact'); assert.equal(v.billingOther, ''); assert.equal(v.contactPhone, '0525264094');
+  // and saving self-heals the coerced value back to its 0-prefixed form
+  assert.deepEqual(core.leadEditPlan(lead, v, TODAY).patch, { billingPhone: '0525264094' });
 });
 
 test('קשר למטופל: «אחר» stores the typed text; a legacy value is kept; a named contact needs a relation', () => {
