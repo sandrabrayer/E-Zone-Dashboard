@@ -116,6 +116,7 @@ test('occupancy: in-house by the dashboard rule (status only), per-house free be
   assert.equal(by.pardes.inHouse, 1, 'alias hapardes → pardes');
   assert.equal(by.sde, undefined, 'closed and empty → hidden');
   assert.equal(o.unknown, 1);
+  assert.deepEqual(o.unknownStays, [{ id: 'y', name: 'ב' }], 'the unknown-house patient is carried for the native fix list (CHANGELOG-crm-unknown-house.md)');
   assert.deepEqual([o.totalIn, o.totalCap, o.totalFree], [3, 73, 70]);
   assert.equal(core.inHouse({ status: 'released', exitDate: '' }), false);
   assert.equal(core.inHouse({ status: 'active', exitDate: '2026-01-01' }), true, 'exitDate alone does not free the bed (app.js rule)');
@@ -637,4 +638,17 @@ test('«מחזור אחר» pick: the placeholder / junk never picks a cycle (no
   assert.equal(core.otherCyclePick('2', list), -1, 'out of range');
   assert.equal(core.otherCyclePick('0', list), 0);
   assert.equal(core.otherCyclePick('1', list), 1);
+});
+
+test('«בית לא מזוהה» is fixed in the CRM: the occupancy card opens a native patient list, not the classic page (CHANGELOG-crm-unknown-house.md)', () => {
+  const fs = require('fs'); const path = require('path');
+  const SRC = fs.readFileSync(path.join(__dirname, '..', 'public', 'crm', 'crm.js'), 'utf8');
+  const start = SRC.indexOf('function renderOccupancy');
+  const occ = SRC.slice(start, start + 2000);
+  assert.ok(!/בית לא מזוהה[\s\S]{0,80}view=classic/.test(occ), 'the unknown-house card no longer points to the classic page');
+  assert.match(occ, /data-occ-unknown="1"/);
+  assert.match(occ, /id="crm-unknown-house"/);
+  assert.match(occ, /o\.unknownStays\.map\(function \(u\) \{ return '<button type="button" class="btn small" data-open-patient="' \+ esc\(u\.id\)/);
+  // the move form on the opened card is what fixes it (already native)
+  assert.match(SRC, /data-form="patient-move"/);
 });

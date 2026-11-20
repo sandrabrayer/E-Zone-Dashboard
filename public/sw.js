@@ -435,7 +435,9 @@
 // to the classic page (CHANGELOG-crm-native-patient-edit.md). From v148; monotonic.
 // v149 → v150: permanent patient delete inside the CRM
 // (CHANGELOG-crm-patient-delete.md). From v149; monotonic.
-var CACHE_VERSION = 'v150';
+// v150 → v151: «בית לא מזוהה» fixed inside the CRM (occupancy opens the
+// patient card natively) (CHANGELOG-crm-unknown-house.md). From v150; monotonic.
+var CACHE_VERSION = 'v151';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

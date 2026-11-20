@@ -2792,3 +2792,37 @@ test('מחיקת מטופל/ת (CHANGELOG-crm-patient-delete.md): finance+delete
     assert.deepEqual(d.errors, []);
   } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
 });
+
+test('«בית לא מזוהה» (CHANGELOG-crm-unknown-house.md): the occupancy tab opens an unknown-house patient natively and the «העברה לבית אחר» form assigns a house — no classic page', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keepP = JSON.parse(JSON.stringify(DATA.patients));
+  DATA.patients['מריח'] = [{ id: 'pUnk', name: 'אבי לא מזוהה', date: daysAgo(12), status: 'active', pay: 8000 }];
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    page.on('dialog', (d) => d.accept());
+    await page.click('#crm-nav button[data-area="occupancy"]');
+    await page.waitForSelector('#crm-main [data-occ-unknown]');
+    // the card no longer points to the classic page
+    assert.equal(await page.locator('#crm-main .links a[href="/?view=classic"]').count(), 0);
+    assert.match(await page.textContent('#crm-main [data-occ-unknown]'), /בית לא מזוהה/);
+    await page.click('#crm-main [data-occ-unknown]');
+    await page.waitForSelector('#crm-unknown-house[open]');
+    // open the unknown-house patient and assign a house via the native move form
+    await page.click('#crm-unknown-house [data-open-patient="pUnk"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act summary:has-text("העברה לבית אחר")');
+    await page.waitForSelector('#crm-drawer form[data-form="patient-move"] [name="toHouseId"]', { state: 'visible' });
+    await page.selectOption('#crm-drawer form[data-form="patient-move"] [name="toHouseId"]', 'ramot');
+    await page.click('#crm-drawer form[data-form="patient-move"] button[type="submit"]');
+    await toastIs(page, /ההעברה של «אבי לא מזוהה» לרמות השבים — בוצע/);
+    const mv = srv.saves.filter((x) => x.action === 'saveAll');
+    assert.equal(mv.length, 1);
+    const moved = mv[0].patients.ramot.filter((p) => p.id === 'pUnk')[0];
+    assert.ok(moved, 'the patient is written into the chosen house');
+    assert.equal(moved.movedFrom, 'מריח', 'the move intent names the origin so the backend accepts it');
+    assert.deepEqual(mv[0].prove, { patients: ['pUnk'] });
+    assert.deepEqual(errors, []);
+  } finally { DATA.patients = keepP; saveAnswer = null; await browser.close(); srv.close(); }
+});
