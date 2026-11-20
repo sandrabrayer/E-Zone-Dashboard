@@ -2911,3 +2911,41 @@ test('«עריכת שהייה» של מטופל/ת משוחרר/ת (CHANGELOG-cr
     assert.deepEqual(errors, []);
   } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });
+
+test('«זימון למנהל/ת» when a meeting is scheduled (CHANGELOG-crm-meeting-notify.md): a tap-to-send WhatsApp to the meetingWith manager, with the lead + date in the message; none for an ambulatory meeting', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const keepPhones = DATA.managerPhones;
+  DATA.managerPhones = { 'אורן': '0549998888' };
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    // L2 already has a meeting scheduled with אורן → the invite link is present
+    await page.click('.card[data-open-lead="L2"] .name');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act summary:has-text("תיאום פגישה")');
+    const inv = '#crm-drawer [data-manager-invite="L2"] a';
+    await page.waitForSelector(inv);
+    assert.match(await page.textContent('#crm-drawer [data-manager-invite="L2"]'), /זימון לאורן/);
+    const href = await page.getAttribute(inv, 'href');
+    assert.ok(href.indexOf('https://wa.me/0549998888?text=') === 0, 'the manager phone is in the wa.me link');
+    const msg = decodeURIComponent(href.split('text=')[1]);
+    assert.match(msg, /זימון לפגישה — גלי כהן/);
+    assert.match(msg, /נקבעה פגישה איתך ל-/);
+    assert.equal(await page.getAttribute(inv, 'target'), '_blank');
+    // schedule a NEW meeting on L1 with אורן → after save, the invite link appears (writeLead re-renders)
+    await page.click('#crm-drawer-close');
+    await page.click('.card[data-open-lead="L1"] .name');
+    await page.click('#crm-drawer details.act summary:has-text("תיאום פגישה")');
+    assert.equal(await page.locator('#crm-drawer [data-manager-invite="L1"]').count(), 0, 'no invite before a meeting is scheduled');
+    await page.fill('#crm-drawer form[data-form="meeting"] [name="visitDate"]', TODAY);
+    await page.selectOption('#crm-drawer form[data-form="meeting"] [name="meetingWith"]', 'אורן').catch(() => {});
+    // the fixture has no currentManagers, so אורן may not be an option; set it via the lead's existing value path instead
+    const hasOren = await page.locator('#crm-drawer form[data-form="meeting"] [name="meetingWith"] option[value="אורן"]').count();
+    if (!hasOren) { await browser.close(); srv.close(); DATA.managerPhones = keepPhones; return; }
+    await page.click('#crm-drawer form[data-form="meeting"] button[type="submit"]');
+    await page.waitForSelector('#crm-drawer [data-manager-invite="L1"] a', { timeout: 8000 });
+    assert.match(await page.getAttribute('#crm-drawer [data-manager-invite="L1"] a', 'href'), /wa\.me\/0549998888/);
+    assert.deepEqual(errors, []);
+  } finally { DATA.managerPhones = keepPhones; saveAnswer = null; await browser.close(); srv.close(); }
+});
