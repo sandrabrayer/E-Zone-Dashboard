@@ -439,7 +439,9 @@
 // patient card natively) (CHANGELOG-crm-unknown-house.md). From v150; monotonic.
 // v151 → v152: «בקרת גבייה» decisions («לא שולם» / «כפילות» / «לא התקבל»)
 // native on each receipt (CHANGELOG-crm-billing-control-decisions.md). From v151; monotonic.
-var CACHE_VERSION = 'v152';
+// v152 → v153: a released patient's entry date + pay are editable in the CRM
+// (CHANGELOG-crm-released-stay-edit.md). From v152; monotonic.
+var CACHE_VERSION = 'v153';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

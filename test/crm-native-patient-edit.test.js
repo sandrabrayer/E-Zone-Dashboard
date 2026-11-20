@@ -49,7 +49,7 @@ test('the patient card no longer links to the classic page; editing (name + fiel
   const rel = SRC.slice(SRC.indexOf('function releasedEditBlock'), SRC.indexOf('function releasedPatientBlock'));
   assert.match(rel, /עריכת פרטי המטופל\/ת/);
   assert.match(rel, /name="name"[\s\S]*name="notes"/);
-  assert.ok(!/name="date"|name="pay"|name="status"/.test(rel), 'released: no stay-date / money / status here');
+  assert.ok(!/name="status"/.test(rel), 'released: no status field — re-activation stays in classic (entry date + pay added in CHANGELOG-crm-released-stay-edit.md)');
   // the finance note dropped its classic link
   assert.ok(!/כל הפעולות על החשבון זמינות כאן\. <a href="\/\?view=classic">/.test(SRC));
 });

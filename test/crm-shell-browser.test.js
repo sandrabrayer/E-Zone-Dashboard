@@ -2726,8 +2726,9 @@ test('«עריכת פרטי המטופל/ת» (CHANGELOG-crm-native-patient-edit
     assert.equal(await page.locator('#crm-drawer [data-pane="overview"] a[href="/?view=classic"]').count(), 0);
     await page.click('#crm-drawer details.act summary:has-text("עריכת פרטי המטופל/ת")');
     const relForm = '#crm-drawer form[data-form="patient-edit"]';
-    assert.equal(await page.locator(relForm + ' [name="date"]').count(), 0, 'no stay-date editing on a released patient here');
-    assert.equal(await page.locator(relForm + ' [name="pay"]').count(), 0);
+    // entry date + pay are editable on a released patient (CHANGELOG-crm-released-stay-edit.md); status is not
+    assert.equal(await page.locator(relForm + ' [name="date"]').count(), 1);
+    assert.equal(await page.locator(relForm + ' [name="status"]').count(), 0, 're-activation stays in the classic flow');
     await page.fill(relForm + ' [name="name"]', 'נועה לוי-כהן');
     await page.fill(relForm + ' [name="notes"]', 'עודכן בכרטיס');
     await page.click(relForm + ' button[type="submit"]');
@@ -2876,5 +2877,37 @@ test('«בקרת גבייה» decisions in the CRM (CHANGELOG-crm-billing-contro
       await toastIs(page, /התביעה בוטלה/);
       assert.equal(srv.saves.filter((x) => x.action === 'confirmPayment').pop().confirm.status, 'not_received');
     }
+  } finally { saveAnswer = null; await browser.close(); srv.close(); }
+});
+
+test('«עריכת שהייה» של מטופל/ת משוחרר/ת (CHANGELOG-crm-released-stay-edit.md): the entry date + monthly pay are editable in the CRM; the patient stays released and the exit date, status and discharge link are kept', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const toastIs = (page, re) => page.waitForFunction((src) => new RegExp(src).test((document.querySelector('#crm-toast') || {}).textContent || ''), re.source, { timeout: 8000 });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.fill('#crm-search', 'נועה');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="px"]').first().click();
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"]');
+    await page.click('#crm-drawer details.act summary:has-text("עריכת פרטי המטופל/ת")');
+    const f = '#crm-drawer form[data-form="patient-edit"]';
+    // the stay date + pay are here now; status is not
+    assert.equal(await page.locator(f + ' [name="date"]').count(), 1);
+    assert.equal(await page.locator(f + ' [name="pay"]').count(), 1);
+    assert.equal(await page.locator(f + ' [name="status"]').count(), 0, 're-activation stays in the classic flow');
+    await page.fill(f + ' [name="date"]', '2026-07-18');
+    await page.fill(f + ' [name="pay"]', '8200');
+    await page.click(f + ' button[type="submit"]');
+    await toastIs(page, /בוצע/);
+    const saved = srv.saves.filter((x) => x.action === 'saveAll').pop();
+    const row = saved.patients.ramot.filter((p) => p.id === 'px')[0];
+    assert.ok(row, 'the released patient row is written');
+    assert.equal(row.date, '2026-07-18', 'the entry date changed');
+    assert.equal(row.pay, 8200, 'the pay changed');
+    assert.equal(row.status, 'released', 'still released — not re-activated');
+    assert.equal(row.exitDate, daysAgo(5), 'the discharge date is untouched — nothing lost');
+    assert.deepEqual(saved.prove, { patients: ['px'] });
+    assert.deepEqual(errors, []);
   } finally { saveAnswer = null; await browser.close(); srv.close(); }
 });
