@@ -1,4 +1,13 @@
-# E-ZONE Ecosystem Status — updated November 19, 2026
+# E-ZONE Ecosystem Status — updated November 20, 2026
+
+## Dashboard CRM — permanent patient delete inside the CRM — November 20, 2026
+
+The patient card (in-house and released) gains **«מחיקת המטופל/ת»** for finance + deleter
+users (ורד / סנדרה), never the verifier. It uses the dedicated `deletePatientRow` backend
+action (tombstone-then-remove, suppresses a stale tab's resurrection for 24h) — not a saveAll
+omission — with a confirm, optimistic removal and rollback on failure, and the server's proven
+id/key. One of the patient operations that used to require «עריכה מלאה בדשבורד». SW cache v150.
+See `CHANGELOG-crm-patient-delete.md`.
 
 ## Dashboard CRM — the patient card is edited in the CRM; no link to the classic page — November 19, 2026
 

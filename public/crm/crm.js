@@ -4338,7 +4338,7 @@
       return '<details class="act"><summary>עריכת פרטי המטופל/ת</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
         + '<label>שם <input type="text" name="name" maxlength="120" value="' + esc(row.name) + '"><span class="err" data-err="name"></span></label>'
         + '<label>הערות <textarea name="notes" rows="2">' + esc(row.notes) + '</textarea></label>'
-        + '<button type="submit" class="btn small primary">שמירה</button></form></details>' + linkedLeadEdit(p);
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>' + linkedLeadEdit(p) + patientDeleteBlock(p);
     }
     /* A button to the linked lead's own edit, where טלפון ופרטי קשר live
      * (CHANGELOG-crm-native-patient-edit.md) — only when that lead is open in the board. */
@@ -4362,6 +4362,36 @@
         + '<button type="submit" class="btn small primary">העבר לאמבולטורי</button>'
         + '<p class="na">השחרור כבר נשמר. טלפון שיוזן נשמר ברשימת הטלפונים של המטופלים — לא יידרש שוב.</p></form></details></div>';
     }
+    /* Permanent patient delete (CHANGELOG-crm-patient-delete.md) — the dedicated
+     * `deletePatientRow` backend action (tombstone-then-remove), not a saveAll
+     * omission. Finance + deleter only (ורד / סנדרה), never the verifier. */
+    function canDeletePatient() { return !!(state.me && state.me.deleter === true && state.me.view !== 'controller'); }
+    function patientDeleteBlock(p) {
+      if (!p || !canDeletePatient()) return '';
+      return '<details class="act danger"><summary>מחיקת המטופל/ת</summary>'
+        + '<p class="na">מחיקה לצמיתות של «' + esc(p.name) + '» — הרשומה וכל ימי השהייה שלה יוסרו. לא ניתן לשחזר מכאן.</p>'
+        + '<button type="button" class="btn small danger" data-del-patient="' + esc(p.id) + '">מחיקה לצמיתות</button></details>';
+    }
+    /* The dedicated delete: optimistic removal, rolled back on failure; the
+     * server names the row it removed (id, or key for a pre-id row). */
+    function deletePatient(pid) {
+      const loc = findPatientRow(pid);
+      if (!loc) { toast('כרטיס המטופל/ת לא נמצא — רענני ונסי שוב.', true); return Promise.resolve(false); }
+      const before = loc.row;
+      if (!win.confirm('למחוק לצמיתות את «' + s(before.name) + '»? הפעולה אינה הפיכה.')) return Promise.resolve(false);
+      const body = { action: 'deletePatientRow', patient: { id: s(before.id), houseId: s(before.houseId) || loc.hid, name: s(before.name), date: s(before.date) } };
+      closeDrawer();
+      return postAction(body, function (res) {
+        if (!res || res.ok !== true) return (res && (res.message || res.error)) || 'מחיקה נכשלה';
+        // R3: the server proves which row it deleted (id, or key for a pre-id row); a retry answers alreadyDeleted with the id.
+        const provenId = res.id || (Number(res.deleted) > 0 ? res.key : '');
+        if (!provenId) return 'מחיקה לא אומתה — רענני ונסי שוב';
+        return null;
+      },
+        function () { loc.arr.splice(loc.idx, 1); },
+        function () { loc.arr.splice(loc.idx, 0, before); },
+        'מחיקת «' + s(before.name) + '»');
+    }
     function renderPatientActions(p) {
       if (p && !inHouse(p)) return releasedPatientBlock(p);
       if (!p) return '';
@@ -4384,7 +4414,8 @@
         + '<label>תאריך שחרור <input type="date" name="dischargeDate" value="' + esc(state.today) + '"><span class="err" data-err="dischargeDate"></span></label>'
         + '<label>המשך טיפול <select name="continuity"><option value="">לא ידוע</option>' + CONTINUITY_CHOICES.map(function (c2) { return '<option value="' + c2.id + '">' + esc(c2.label) + '</option>'; }).join('') + '</select></label>'
         + '<label>הערה <input type="text" name="note" maxlength="500"></label>'
-        + '<button type="submit" class="btn small primary">שחרור</button></form></details></div>';
+        + '<button type="submit" class="btn small primary">שחרור</button></form></details>'
+        + patientDeleteBlock(p) + '</div>';
     }
     function findPatientRow(pid) {
       const p = state.data && state.data.patients;
@@ -5879,6 +5910,14 @@
         .finally(function () { btn.disabled = false; });
     });
 
+    /* Permanent patient delete (CHANGELOG-crm-patient-delete.md). */
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-del-patient]') : null;
+      if (!t) return;
+      ev.preventDefault();
+      if (state.saving) return;
+      deletePatient(s(t.dataset.delPatient));
+    });
     /* «עריכת טלפון ופרטי קשר»: from a patient card to its linked lead's own edit. */
     root.addEventListener('click', function (ev) {
       const t = ev.target && ev.target.closest ? ev.target.closest('[data-open-linked-lead]') : null;
