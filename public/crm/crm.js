@@ -4396,21 +4396,35 @@
      * here — phone optional (found from the lead / the phone book), asked when none is found. */
     /* The released patient's name + notes, edited in the CRM (CHANGELOG-crm-native-patient-edit.md).
      * Stay dates and status stay in the classic flow (a discharge row is bound to them). */
-    function releasedEditBlock(p) {
+    function releasedEditBlock(p, discharge) {
       const raw = findPatientRow(p.id);
       const row = raw ? raw.row : p;
       // Stay dates (entry date) + monthly pay are editable to fix overlaps
-      // (CHANGELOG-crm-released-stay-edit.md). The patient stays released — status is
-      // NOT changed here (re-activating a released patient reopens the discharge row and
-      // stays in the classic flow), so no discharge/credit reconciliation is triggered:
-      // the row, its discharge audit and its credits all stay linked by the stable id.
+      // (CHANGELOG-crm-released-stay-edit.md). The patient-edit form keeps the status
+      // released — re-activation is a SEPARATE action (reactivateBlock, below) through the
+      // same proven restore flow «משוחררים» uses, so the row, its discharge audit and its
+      // credits all stay linked by the stable id and nothing is lost.
       return '<details class="act"><summary>עריכת פרטי המטופל/ת</summary><form data-form="patient-edit" data-patient="' + esc(p.id) + '" novalidate>'
         + '<label>שם <input type="text" name="name" maxlength="120" value="' + esc(row.name) + '"><span class="err" data-err="name"></span></label>'
         + '<label>תאריך כניסה <input type="date" name="date" value="' + esc(s(row.date).slice(0, 10)) + '"><span class="err" data-err="date"></span></label>'
         + '<label>תשלום חודשי (₪) <input type="number" name="pay" min="0" step="1" value="' + esc(String(Number(row.pay) || 0)) + '"><span class="err" data-err="pay"></span></label>'
         + '<label>הערות <textarea name="notes" rows="2">' + esc(row.notes) + '</textarea></label>'
-        + '<p class="na">תאריך השחרור והחזרה לסטטוס «פעיל» נעשים בדשבורד הרגיל.</p>'
-        + '<button type="submit" class="btn small primary">שמירה</button></form></details>' + linkedLeadEdit(p) + patientDeleteBlock(p);
+        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + reactivateBlock(p, discharge) + linkedLeadEdit(p) + patientDeleteBlock(p);
+    }
+    /* «החזרה לפעיל» on the released-patient card (CHANGELOG-crm-reactivate-card.md). A sibling
+     * of the edit form (never nested inside it — the restore form is itself a <form>). It
+     * opens the SAME restore flow the «משוחררים» tab uses (openRestoreChoice → submitRestore),
+     * which flips the row back to its prior status AND flags every open discharge audit of the
+     * stay restored — the "nothing gets lost" guard, reused, not re-implemented. Shown only
+     * when the patient has an open discharge audit and the viewer may write (not a controller);
+     * an auditless legacy release still points to the classic dashboard. */
+    function reactivateBlock(p, d) {
+      if (state.me && state.me.view === 'controller') return '';
+      if (!d || !s(d.id)) return '<p class="na">החזרה לסטטוס «פעיל» — בדשבורד הרגיל (אין רישום שחרור מקושר).</p>';
+      return '<div class="act reactivate"><p class="na">להחזרת המטופל/ת לסטטוס פעיל (ביטול השחרור):</p>'
+        + '<button type="button" class="btn small primary" data-card-restore="' + esc(d.id) + '">↩︎ החזרה לפעיל</button>'
+        + '<div id="crm-card-restore"></div></div>';
     }
     /* A button to the linked lead's own edit, where טלפון ופרטי קשר live
      * (CHANGELOG-crm-native-patient-edit.md) — only when that lead is open in the board. */
@@ -4424,7 +4438,7 @@
     function releasedPatientBlock(p) {
       const c = compute(state.data, state.today);
       const d = meetingsFor(p, 'patient', c).discharge;
-      const edit = releasedEditBlock(p);
+      const edit = releasedEditBlock(p, d);
       if (!d || !d.id) return edit ? '<div class="actions">' + edit + '</div>' : '';
       if (c.outpatientSent && c.outpatientSent['discharge:' + d.id])
         return '<div class="actions">' + edit + '<div class="notice ok">נשלח לאמבולטורי ✓ · מצב הטיפול טרם אומת</div>' + outpatientStatusButton(d.id, 'discharge') + '</div>';
@@ -4602,8 +4616,8 @@
         }).join('') + '</tbody></table></div><div id="crm-restore"></div>';
     }
     /* C17: restore (to the previous status, or as a new lead) and the manual Outpatient handoff. */
-    function openRestoreChoice(id) {
-      const el = $('#crm-restore'); const c = compute(state.data, state.today);
+    function openRestoreChoice(id, sel) {
+      const el = $(sel || '#crm-restore'); const c = compute(state.data, state.today);
       const r = dischargedList(c, state.today, 0, {}).filter(function (x) { return x.id === id; })[0];
       if (!el || !r) return;
       const target = restoreTarget(r, state.data.patients);
@@ -4650,7 +4664,7 @@
           }, Promise.resolve()).then(function () { return '«' + s(r.name) + '» חזר/ה לבית'; });
         });
       }
-      return chain.then(function (msg) { state.saving = false; clearBusy(); toast(msg); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
+      return chain.then(function (msg) { state.saving = false; clearBusy(); toast(msg); closeDrawer(); return load().then(function () { state.area = 'clients'; state.clientsView = 'out'; renderNav(); renderMain(); return true; }); })
         .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], String(e && e.message || e)); toast(String(e && e.message || e), true); return false; });
     }
     function sendToOutpatient(id, phone) {
@@ -7247,14 +7261,15 @@
       }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-to-outpatient],[data-out-phone-cancel],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-clients-view],[data-restore],[data-card-restore],[data-to-outpatient],[data-out-phone-cancel],[data-restore-cancel],[data-link-open],[data-notpatient-open],[data-link-cancel]') : null;
       if (!t) return;
       if (t.dataset.clientsView) { state.clientsView = t.dataset.clientsView; return renderMain(); }
       if (t.dataset.linkCancel !== undefined) { state.link = null; const el = $('#crm-link'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.linkOpen) return openLinkForm('link', t.dataset.linkOpen);
       if (t.dataset.notpatientOpen) return openLinkForm('not', t.dataset.notpatientOpen);
-      if (t.dataset.restoreCancel !== undefined) { const el = $('#crm-restore'); if (el) el.innerHTML = ''; return; }
+      if (t.dataset.restoreCancel !== undefined) { ['#crm-restore', '#crm-card-restore'].forEach(function (sx) { const el = $(sx); if (el) el.innerHTML = ''; }); return; }
       if (t.dataset.restore) return openRestoreChoice(t.dataset.restore);
+      if (t.dataset.cardRestore) return openRestoreChoice(t.dataset.cardRestore, '#crm-card-restore');
       if (t.dataset.outPhoneCancel !== undefined) { state.outPhone = ''; return renderMain(); }
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });

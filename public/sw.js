@@ -445,7 +445,9 @@
 // (CHANGELOG-crm-meeting-notify.md). From v153; monotonic.
 // v154 → v155: optional patient name / phone on first-call intake
 // (CHANGELOG-optional-lead-fields.md). From v154; monotonic.
-var CACHE_VERSION = 'v155';
+// v155 → v156: «החזרה לפעיל» on the released-patient card (reuses the «משוחררים»
+// restore flow). (CHANGELOG-crm-reactivate-card.md). From v155; monotonic.
+var CACHE_VERSION = 'v156';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

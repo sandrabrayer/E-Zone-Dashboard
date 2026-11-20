@@ -1133,6 +1133,33 @@ test('C17 «משוחררים» (Vered): the discharged list with its flags; rest
   } finally { await browser.close(); srv.close(); }
 });
 
+test('C17b «החזרה לפעיל» from the released-patient card (Vered): opens the SAME restore flow — house-as-read saveAll + every open audit flagged, then the drawer closes', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    // open the released patient «נועה לוי» (px) from search → the released card in the drawer
+    await page.fill('#crm-search', 'נועה');
+    await page.click('#crm-search-go');
+    await page.locator('[data-open-patient="px"]').first().click();
+    await page.waitForSelector('#crm-drawer [data-card-restore="dx1"]', { timeout: 5000 });
+    // «החזרה לפעיל» opens the restore form INSIDE the card's own container (not nested in the edit form)
+    await page.click('#crm-drawer [data-card-restore="dx1"]');
+    await page.waitForSelector('#crm-card-restore form[data-form="restore"]', { timeout: 5000 });
+    assert.equal(await page.inputValue('#crm-card-restore form[data-form="restore"] input[name="how"]:checked'), 'active');
+    await page.click('#crm-card-restore form[data-form="restore"] button[type="submit"]');
+    // the drawer closes on success (submitRestore → closeDrawer)
+    await page.waitForFunction(() => { const d = document.querySelector('#crm-drawer'); return d && d.getAttribute('aria-hidden') === 'true'; }, null, { timeout: 8000 });
+    const sa = srv.saves.find((b) => b.action === 'saveAll');
+    assert.ok(sa, 'the house-as-read saveAll went through');
+    const restored = sa.patients.ramot.filter((p) => p.id === 'px')[0];
+    assert.equal(restored.status, 'active'); assert.equal(restored.exitDate, '', 'back to active, exit cleared');
+    assert.ok(srv.saves.find((b) => b.action === 'restorePatientToActive' && b.patient.id === 'dx1' && b.patient.restored === 'TRUE'),
+      'the stay\'s open discharge audit is flagged restored — nothing left to re-release it on reload');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); srv.close(); }
+});
+
 test('C18 payment linking (Vered): the detached row in גבייה; «שייך» preselects the look-alike patient and posts the classic savePayment link row; «לא מטופל/ת» needs a reason; the three reads refresh', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });

@@ -1,5 +1,15 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — «החזרה לפעיל» on the released-patient card — November 20, 2026
+
+Re-activating a released patient already worked from the «משוחררים» tab; the released-patient
+card now has its own **«↩︎ החזרה לפעיל»** action (replacing the old "do it in the classic
+dashboard" note). It opens the SAME restore flow (`openRestoreChoice` → `submitRestore`) into the
+card's own container — flipping the row back to its prior status, clearing the exit date, and
+flagging **every** open discharge audit of the stay `restored='TRUE'` (the guard against the
+heal-on-load re-releasing it). No new ledger logic; auditless legacy releases still point to the
+classic dashboard; controllers get no action. SW cache v156. See `CHANGELOG-crm-reactivate-card.md`.
+
 ## Dashboard CRM — optional patient name / phone on first-call intake — November 20, 2026
 
 On the first call the caller is usually ringing for someone else and won't give their full

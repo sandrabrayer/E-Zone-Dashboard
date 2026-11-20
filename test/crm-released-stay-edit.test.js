@@ -31,14 +31,36 @@ test('the same validation as the in-house edit (entry date in range, pay ≥ 0);
   assert.equal(core.patientEditErrors({ name: 'נ', date: '2026-07-20', pay: '-5' }).pay, 'סכום חודשי לא תקין');
 });
 
-test('the released card exposes entry date + pay (and name/notes), but NOT status', () => {
+test('the released card exposes entry date + pay (and name/notes), but NOT status; re-activation is a separate «החזרה לפעיל» action', () => {
   const blk = SRC.slice(SRC.indexOf('function releasedEditBlock'), SRC.indexOf('function linkedLeadEdit'));
   assert.match(blk, /name="date"/);
   assert.match(blk, /name="pay"/);
   assert.match(blk, /name="name"/);
   assert.match(blk, /name="notes"/);
-  assert.ok(!/name="status"/.test(blk), 're-activation stays in the classic flow (discharge reopen)');
-  assert.match(blk, /תאריך השחרור והחזרה לסטטוס «פעיל» נעשים בדשבורד הרגיל/);
-  // the comment records why it is safe (status unchanged → no reconciliation)
-  assert.match(blk, /no discharge\/credit reconciliation is triggered/);
+  assert.ok(!/name="status"/.test(blk), 'the edit form never flips status directly');
+  // re-activation: a sibling «החזרה לפעיל» button (NOT nested in the edit form) that opens the
+  // SAME restore flow «משוחררים» uses, keyed by the discharge-audit id — never a status field
+  assert.match(blk, /data-card-restore="' \+ esc\(d\.id\)/);
+  assert.match(blk, /החזרה לפעיל/);
+  assert.match(blk, /crm-card-restore/);
+  // an auditless legacy release still points to the classic dashboard
+  assert.match(blk, /אין רישום שחרור מקושר/);
+  // controllers (verification-only) get no re-activate action
+  assert.match(blk, /state\.me && state\.me\.view === 'controller'\) return '';/);
+  // the comment records why it is safe (reuses the proven restore — nothing lost)
+  assert.match(blk, /nothing is lost/);
+});
+
+test('«החזרה לפעיל» reuses the «משוחררים» restore flow (no duplicated ledger logic)', () => {
+  // the card button and the discharged-list button both reach openRestoreChoice; the card
+  // one targets its own container so the restore form is never nested in the edit form
+  assert.match(SRC, /function openRestoreChoice\(id, sel\)/);
+  assert.match(SRC, /\$\(sel \|\| '#crm-restore'\)/);
+  assert.match(SRC, /if \(t\.dataset\.cardRestore\) return openRestoreChoice\(t\.dataset\.cardRestore, '#crm-card-restore'\);/);
+  // cancel clears whichever container is open
+  assert.match(SRC, /\['#crm-restore', '#crm-card-restore'\]\.forEach/);
+  // submitRestore is unchanged in substance: it still flags EVERY open audit of the stay and
+  // now closes the drawer on success (harmless on the list, clean from the card)
+  assert.match(SRC, /const siblings = openAuditsOf\(r, c\.discharges\);/);
+  assert.match(SRC, /toast\(msg\); closeDrawer\(\); return load\(\)/);
 });
