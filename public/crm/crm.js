@@ -1279,6 +1279,15 @@
     if (ch && ch.change === 'cancelled') return head + 'הפגישה שנקבעה ל-' + when(ch.prevDate, ch.prevTime) + ' בוטלה ע״י המטופל/ת.' + note;
     return head + 'המטופל/ת שינה/תה את מועד הפגישה' + (s(ch && ch.prevDate) ? ' מ-' + when(ch.prevDate, ch.prevTime) : '') + ' ל-' + when(ch && ch.newDate, ch && ch.newTime) + '.' + note;
   }
+  /* The WhatsApp «זימון» to the manager a meeting was scheduled with
+   * (CHANGELOG-crm-meeting-notify.md). Pure. */
+  function managerScheduledMessage(l) {
+    const when = fmtDate(l && l.visitDate) + (s(l && l.visitTime) ? ' בשעה ' + s(l.visitTime) : '');
+    const house = houseName(l && l.house) ? ' (' + houseName(l.house) + ')' : '';
+    const contact = s(l && l.contactName) ? '\nאיש קשר: ' + s(l.contactName) + (s(l.contactPhone) ? ' · ' + s(l.contactPhone) : '') : '';
+    const note = s(l && l.note) ? '\nהערה: ' + s(l.note) : '';
+    return 'זימון לפגישה — ' + s(l && l.name) + house + ': נקבעה פגישה איתך ל-' + when + '.' + contact + note;
+  }
   /* wa.me link to the manager's phone (digits only); no valid phone → the sender picks the chat. Pure. */
   function managerWaUrl(phone, text) {
     const digits = s(phone).replace(/\D/g, '');
@@ -5742,7 +5751,9 @@
         + '<details class="act"><summary>תיאום פגישה</summary><form data-form="meeting" data-lead="' + esc(l.id) + '"><label>תאריך <input type="date" name="visitDate" value="' + esc(l.visitDate) + '"></label>'
         + '<label>שעה <input type="time" name="visitTime" value="' + esc(l.visitTime) + '"></label>'
         + '<label>נפגש/ת עם <select name="meetingWith">' + opts(managers, l.meetingWith, true) + '</select></label>'
-        + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
+        + '<button type="submit" class="btn small primary">שמירה</button></form>'
+        + (managerScheduledLink(l) ? '<p class="na" data-manager-invite="' + esc(l.id) + '">זימון ל' + esc(l.meetingWith) + ' שהפגישה נקבעה איתו/ה — <a class="btn small primary" target="_blank" rel="noopener" href="' + esc(managerScheduledLink(l)) + '">שליחה בוואטסאפ</a></p>' : '')
+        + '</details>'
         + (l.stage === 'visit' && s(l.visitDate) ? patientChangeBlock(l) : '')
         + '<details class="act"><summary>דיווח תוצאת פגישה</summary><form data-form="outcome" data-lead="' + esc(l.id) + '"><label>תוצאה <select name="meetingOutcome"><option value="">—</option>' + MEETING_OUTCOMES.map(function (o) { return '<option value="' + o.id + '"' + (l.meetingOutcome === o.id ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('') + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form></details>'
@@ -5851,6 +5862,16 @@
       if (!ch) return '';
       const phones = state.data && state.data.managerPhones && typeof state.data.managerPhones === 'object' ? state.data.managerPhones : {};
       return managerWaUrl(phones[s(ch.withWhom || l.meetingWith)] || '', managerChangeMessage(l, ch));
+    }
+    /* The «זימון» WhatsApp link to the manager a meeting was scheduled with, or ''
+     * (CHANGELOG-crm-meeting-notify.md). Shown once the lead has a dated meeting with a
+     * real manager (not «אמבולטורי»). */
+    function managerScheduledLink(l) {
+      if (!l || s(l.stage) !== 'visit' || !s(l.visitDate)) return '';
+      const who = s(l.meetingWith);
+      if (!who || who === MEETING_WITH_AMBULATORY) return '';
+      const phones = state.data && state.data.managerPhones && typeof state.data.managerPhones === 'object' ? state.data.managerPhones : {};
+      return managerWaUrl(phones[who] || '', managerScheduledMessage(l));
     }
     function setSaveState(text, bad) {
       const el = $('#crm-save-state'); if (el) { el.textContent = text; el.style.color = bad ? 'var(--bad)' : ''; }
@@ -7536,7 +7557,7 @@
 
   return { HOUSES: HOUSES, STAGES: STAGES, AREAS: AREAS, WAIT_DAYS: WAIT_DAYS, areasFor: areasFor, landingArea: landingArea, activePatientsCard: activePatientsCard, monthOccupancy: monthOccupancy, occupancyTrend: occupancyTrend, monthRevenue: monthRevenue, monthShift: monthShift, monthLabelHe: monthLabelHe, monthKeyOk: monthKeyOk, normalise: normalise, compute: compute, filterLeads: filterLeads,
     board: board, NOT_RELEVANT_DAYS: NOT_RELEVANT_DAYS, NOT_RELEVANT_REASONS: NOT_RELEVANT_REASONS, notRelevantColumn: notRelevantColumn, nextActionFor: nextActionFor, clients: clients, calendar: calendar, control: control, controllerDay: controllerDay, houseName: houseName, houseId: houseId,
-    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, decisionReasonError: decisionReasonError, decisionBody: decisionBody, decisionAccepted: decisionAccepted, decisionVoided: decisionVoided, applyDecision: applyDecision, BC_DECISIONS: BC_DECISIONS, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
+    occupancy: occupancy, inHouse: inHouse, fmtDate: fmtDate, whenLocal: whenLocal, esc: esc, boot: boot, accountTabVisible: accountTabVisible, accountReadable: accountReadable, receiptVerifyChip: receiptVerifyChip, canVerifyReceipt: canVerifyReceipt, verifyBody: verifyBody, verifyAccepted: verifyAccepted, verifyRefusal: verifyRefusal, applyVerified: applyVerified, partialVerifyCheck: partialVerifyCheck, partialVerifyBody: partialVerifyBody, partialAccepted: partialAccepted, applyPartial: applyPartial, managerScheduledMessage: managerScheduledMessage, managerWaUrl: managerWaUrl, decisionReasonError: decisionReasonError, decisionBody: decisionBody, decisionAccepted: decisionAccepted, decisionVoided: decisionVoided, applyDecision: applyDecision, BC_DECISIONS: BC_DECISIONS, unverifiedReceipts: unverifiedReceipts, unverifiedTotal: unverifiedTotal, billingFind: billingFind, FIND_RECEIPTS_CAP: FIND_RECEIPTS_CAP, PAY_KINDS: PAY_KINDS, payKindCheck: payKindCheck, payKindPreview: payKindPreview, CONFIRM_LABELS: CONFIRM_LABELS, RECEIPT_ROWS_CAP: RECEIPT_ROWS_CAP, clearCachedPages: clearCachedPages,
     MEETING_OUTCOMES: MEETING_OUTCOMES, MEETING_WITH_AMBULATORY: MEETING_WITH_AMBULATORY, ASSIGNEES: ASSIGNEES,
     stageAfter: stageAfter, stageBefore: stageBefore, applyLeadPatch: applyLeadPatch, leadSaveBody: leadSaveBody, saveRefusal: saveRefusal,
     DISPOSITIONS: DISPOSITIONS, CONTACT_RELATIONS: CONTACT_RELATIONS, localPhone: localPhone, leadFormErrors: leadFormErrors, newLeadRow: newLeadRow,

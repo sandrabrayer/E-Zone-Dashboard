@@ -1,5 +1,13 @@
 # E-ZONE Ecosystem Status — updated November 20, 2026
 
+## Dashboard CRM — «זימון» to the manager when a meeting is scheduled (Part A: WhatsApp) — November 20, 2026
+
+When a meeting is scheduled with a lead («תיאום פגישה» with a real manager, not «אמבולטורי»),
+the lead card shows a ready **WhatsApp «זימון»** to that manager — the same tap-to-send pattern
+as today's cancel/reschedule notice (`managerWaUrl` + `managerPhones`). The message names the
+lead, house, date/time and contact. Part B — an automatic item in the managers' app — is a
+separate cross-repo change. SW cache v154. See `CHANGELOG-crm-meeting-notify.md`.
+
 ## Dashboard CRM — a released patient's stay date + pay are editable in the CRM — November 20, 2026
 
 «עריכת פרטי המטופל/ת» on a released patient's card now also edits the **entry date** and
