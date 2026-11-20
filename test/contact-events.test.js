@@ -19,7 +19,10 @@ test('only a dedicated JSON POST can ingest; queries, proxy credentials and dire
   assert.equal(receive({ businessNumber: '0500000088' }).error, 'wrong_line');
   assert.equal(receive({ channel: 'whatsapp', connection: 'web' }).error, 'wrong_connection');
   assert.equal(receive({ channel: 'phone', connection: 'mobile' }).error, 'wrong_connection');
-  g.sandbox.__props.CONTACT_EVENT_BUSINESS_NUMBER = ''; assert.equal(receive().error, 'wrong_line');
+  assert.equal(receive({ businessNumber: '+972500000099' }).error, 'wrong_line', 'the WhatsApp line alone does not authorize a PBX DID');
+  g.sandbox.__props.CONTACT_EVENT_BUSINESS_NUMBER = '';
+  assert.equal(receive({ channel: 'whatsapp', scope: 'direct', status: 'received' }).error, 'wrong_line');
+  g.sandbox.__props.CONTACT_EVENT_PBX_NUMBERS = ''; assert.equal(receive().error, 'wrong_line');
   g.sandbox.__props.CONTACT_EVENT_INGEST_TOKEN = ''; assert.equal(receive().error, 'unauthorized');
   assert.deepEqual(Object.keys(g.sandbox.__sheets), []);
 });
@@ -29,7 +32,7 @@ test('whole call only; first missed call waits for review, one callback and one 
   assert.equal(d.receive({ scope: 'leg' }).ignored, true);
   assert.equal(d.receive({ final: false }).ignored, true);
   assert.equal(d.receive({ status: 'ringing' }).ok, true);
-  assert.equal(d.receive().ok, true); assert.equal(d.receive().ok, true);
+  assert.equal(d.receive().ok, true); assert.equal(d.receive({businessNumber: '+97232990002'}).ok, true);
   const q = d.staff('getCommunicationReview'); assert.equal(q.total, 1); assert.deepEqual(q.events[0].suggestions, ['test-card-a']);
   assert.equal(d.tasks().length, 0);
   assert.equal(d.link({ verifiedContact: false }).error, 'bad_review');

@@ -138,8 +138,13 @@ function commReconcileCallback_(e, lead) {
 
 function ingestCommunicationEvent_(params) {
   const event = params.event;
-  const business = commPhone_(PropertiesService.getScriptProperties().getProperty('CONTACT_EVENT_BUSINESS_NUMBER'));
-  if (!business || !event || typeof event.businessNumber !== 'string' || commPhone_(event.businessNumber) !== business) return { ok: false, error: 'wrong_line' };
+  if (!event || typeof event.businessNumber !== 'string') return { ok: false, error: 'wrong_line' };
+  const line = commPhone_(event.businessNumber);
+  const props = PropertiesService.getScriptProperties();
+  // The existing WhatsApp number and the PBX's campaign / return-call DIDs may differ.
+  const allowed = event.channel === 'phone' ? String(props.getProperty('CONTACT_EVENT_PBX_NUMBERS') || '').split(/[,\n]/) :
+    [props.getProperty('CONTACT_EVENT_BUSINESS_NUMBER')];
+  if (!line || !allowed.some(function (v) { return commPhone_(v) === line; })) return { ok: false, error: 'wrong_line' };
   if ((event.channel === 'whatsapp' && event.connection !== 'official_whatsapp') ||
       (event.channel === 'phone' && event.connection !== 'pbx')) return { ok: false, error: 'wrong_connection' };
   const incoming = commClean_(event);

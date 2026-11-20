@@ -11,7 +11,7 @@ const REF = '1'.repeat(32);
 const AT = new Date(Date.now() + 3600000).toISOString();
 
 function makeDesk() {
-  const g = loadGs({ props: { PROXY_SECRET: PROXY, CONTACT_EVENT_INGEST_TOKEN: TOKEN, CONTACT_EVENT_BUSINESS_NUMBER: '0500000099' } });
+  const g = loadGs({ props: { PROXY_SECRET: PROXY, CONTACT_EVENT_INGEST_TOKEN: TOKEN, CONTACT_EVENT_BUSINESS_NUMBER: '0500000099', CONTACT_EVENT_PBX_NUMBERS: '03-2990001, 03-2990002' } });
   g.sandbox.SpreadsheetApp.flush = () => {};
   g.sandbox.Utilities.formatDate = (d, zone) => new Intl.DateTimeFormat('sv-SE', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d));
   g.run(SOURCE);
@@ -23,7 +23,7 @@ function makeDesk() {
     sh.appendRow(cols.map((c) => obj[c] || ''));
   }
   function receive(overrides = {}) {
-    const event = Object.assign({ businessNumber: '+972500000099', connection: overrides.channel === 'whatsapp' ? 'official_whatsapp' : 'pbx', channel: 'phone', scope: 'call', direction: 'in', objectRef: REF, status: 'missed', final: true, occurredAt: AT, observedAt: AT, phone: PHONE }, overrides);
+    const event = Object.assign({ businessNumber: overrides.channel === 'whatsapp' ? '+972500000099' : '+97232990001', connection: overrides.channel === 'whatsapp' ? 'official_whatsapp' : 'pbx', channel: 'phone', scope: 'call', direction: 'in', objectRef: REF, status: 'missed', final: true, occurredAt: AT, observedAt: AT, phone: PHONE }, overrides);
     return g.post({ action: 'ingestCommunicationEvent', ingestToken: TOKEN, event });
   }
   function staff(action, params = {}, id = 'vered') {

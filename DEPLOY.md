@@ -791,13 +791,13 @@ The family sees the approved address and a map link. A missing or malformed addr
 
 The contact ledger accepts the **internal adapter contract** below. PayCall's payload, method of signature verification, retry headers, agent echo and PBX leg grouping still need its technical documentation and sandbox examples. The adapter must authenticate PayCall, verify which business line and connection an event belongs to, collapse PBX leg events to a root call, and derive a stable opaque reference from the provider account, channel and object ID. For private WhatsApp messages the counterparty is the customer on either direction. Reports of agent identity come from authenticated provider metadata. A draft or a link opening is never evidence of a send.
 
-In an isolated Apps Script test deployment, use a different spreadsheet, a synthetic line and a new independent Script Property `CONTACT_EVENT_INGEST_TOKEN` (at least 32 high-entropy characters). Set `CONTACT_EVENT_BUSINESS_NUMBER` to the line the adapter has verified. The staff dashboard continues to use its existing proxy credential. Do not put either credential in a URL or browser. Both settings are absent by default. Initial integration tests use no live business account.
+In an isolated Apps Script test deployment, use a different spreadsheet, a synthetic line and a new independent Script Property `CONTACT_EVENT_INGEST_TOKEN` (at least 32 high-entropy characters). Set `CONTACT_EVENT_BUSINESS_NUMBER` to the verified WhatsApp line. Set `CONTACT_EVENT_PBX_NUMBERS` independently to the PBX numbers that PayCall confirms belong to this desk, separated by commas. The two channels may use different numbers. The staff dashboard continues to use its existing proxy credential. Do not put either credential in a URL or browser. All three intake settings are absent by default. Initial integration tests use no live business account.
 
 The private adapter posts a JSON body containing `action: "ingestCommunicationEvent"`, `ingestToken`, and `event`. Fields of `event` are:
 
 | Field | Meaning |
 | --- | --- |
-| channel, connection, businessNumber | phone / pbx or whatsapp / official_whatsapp, and the business line in international format |
+| channel, connection, businessNumber | phone / pbx or whatsapp / official_whatsapp, and the business-side line for that channel in international format |
 | scope, objectRef | call (whole conversation) or direct (private message), and a stable 32-character lowercase hexadecimal reference |
 | direction, phone | in or out relative to the business, and the counterparty's number, or an empty string for withheld/unavailable |
 | occurredAt, observedAt | Original interaction time and provider observation time in UTC ISO format, seconds or milliseconds |
