@@ -117,7 +117,7 @@ test('B: the column reads irrelevantLeads only, escapes every value, restores th
   assert.match(body, /notRelevantColumn\(state\.data && state\.data\.irrelevantLeads, f, state\.today\)/);
   assert.doesNotMatch(body, /state\.data\.leads/);
   assert.match(body, /data-restore-lead="' \+ esc\(l\.id\) \+ '"/);
-  assert.match(body, /esc\(l\.name\)/); assert.match(body, /esc\(note/); assert.match(body, /title="' \+ esc\(note\) \+ '"/);
+  assert.match(body, /esc\(leadLabel\(l\)\)/); assert.match(body, /esc\(note/); assert.match(body, /title="' \+ esc\(note\) \+ '"/);
   assert.doesNotMatch(body, /data-open-lead/, 'a closed card does not open the (missing) lead');
   assert.match(CRM_SRC, /\}\)\.join\(''\) \+ notRelevantColHtml\(f\) \+ '<\/div>';/, 'rendered as the last board column');
 });

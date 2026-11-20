@@ -3987,19 +3987,23 @@ function leadPhoneOk_(raw) {
   return /^0\d{9}$/.test(normalizePhone_(raw));
 }
 function leadRequiredViolations_(leads, existingById) {
+  /* First-call intake relaxation (CHANGELOG-optional-lead-fields.md, 20/11/2026):
+   * a lead NAME is OPTIONAL — the first caller is often ringing for someone else and
+   * won't give the patient's full name (the app requires a name later, at admission, so
+   * no nameless patient row is ever created). A PHONE is optional too, but a NON-EMPTY
+   * phone must still be a valid Israeli number (format guard kept). Only the phone, and
+   * only when it is both present and changed, can refuse a save here. */
   const out = [];
-  const nameIdx = LEAD_COLUMNS.indexOf('name');
   const phoneIdx = LEAD_COLUMNS.indexOf('phone');
   (leads || []).forEach(function (l) {
     if (!l || String(l.source || '') === LEAD_DIRECT_ADMIN_SOURCE ||
         String(l.source || '') === LEAD_DIRECT_APPROACH_SOURCE) return;
     const id = String(l.id == null ? '' : l.id);
     const existing = existingById[id];
-    const nameChanged = !existing || leadNameKey_(l.name) !== leadNameKey_(existing[nameIdx]);
-    const phoneChanged = !existing || String(l.phone == null ? '' : l.phone).trim() !==
+    const phone = String(l.phone == null ? '' : l.phone).trim();
+    const phoneChanged = !existing || phone !==
       String(existing[phoneIdx] == null ? '' : existing[phoneIdx]).trim();
-    if (nameChanged && !leadFullNameOk_(l.name)) out.push({ id: id, name: leadNameKey_(l.name), field: 'name' });
-    if (phoneChanged && !leadPhoneOk_(l.phone)) out.push({ id: id, name: leadNameKey_(l.name), field: 'phone' });
+    if (phoneChanged && phone && !leadPhoneOk_(l.phone)) out.push({ id: id, name: leadNameKey_(l.name), field: 'phone' });
   });
   return out;
 }

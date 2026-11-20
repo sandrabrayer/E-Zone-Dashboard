@@ -1,9 +1,11 @@
 'use strict';
 
-/* Lead validation: full name (2+ words) + valid Israeli phone
- * (CHANGELOG-lead-name-phone-required.md). The UI checks inline (Hebrew) and
- * Code.gs refuses the save — new leads always, existing leads only on a
- * changed field. Names / phones are SYNTHETIC. app.js and Code.gs are REAL. */
+/* Lead validation. The CLASSIC app.js add-lead modal still checks name + phone
+ * inline (legacy path, retained). Code.gs intake (saveAll) was RELAXED on
+ * 20/11/2026 (CHANGELOG-optional-lead-fields.md): name and phone are OPTIONAL —
+ * a first caller often won't give them — but a NON-EMPTY phone must still be a
+ * valid Israeli number. The name is required later, at admission, in the CRM.
+ * Names / phones are SYNTHETIC. app.js and Code.gs are REAL. */
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -125,19 +127,30 @@ function boot(leads) {
   return { g, save, rows };
 }
 
-test('server: a NEW lead without a full name or valid phone is refused — nothing written', () => {
+test('server: a NEW lead with no name / no phone / a one-word name now saves (relaxed 20/11/2026)', () => {
   const { save, rows } = boot([]);
+  // a one-word name + valid phone — was refused, now allowed
   let r = save([{ id: 'n1', name: 'דנה', phone: '0527654321', stage: 'new' }]);
-  assert.equal(r.ok, false);
-  assert.equal(r.error, 'invalid_lead');
-  assert.equal(r.invalidLeads[0].field, 'name');
-  assert.match(r.message, /שם מלא/);
-  r = save([{ id: 'n1', name: 'דנה כהן', phone: '', stage: 'new' }]);
-  assert.equal(r.ok, false);
-  assert.equal(r.invalidLeads[0].field, 'phone');
-  r = save([{ id: 'n1', name: 'דנה כהן', phone: '02-6543210', stage: 'new' }]);
+  assert.equal(r.ok, true, 'one-word name accepted');
+  // a named lead with no phone — allowed
+  r = save([{ id: 'n2', name: 'דנה כהן', phone: '', stage: 'new' }]);
+  assert.equal(r.ok, true, 'no phone accepted');
+  // a fully nameless, phoneless intake row — allowed (house + source are enforced in the app)
+  r = save([{ id: 'n3', name: '', phone: '', stage: 'new' }]);
+  assert.equal(r.ok, true, 'nameless + phoneless accepted');
+  assert.equal(rows().length, 3);
+});
+
+test('server: a NON-EMPTY invalid phone is still refused — the format guard is kept', () => {
+  const { save, rows } = boot([]);
+  let r = save([{ id: 'n1', name: 'דנה כהן', phone: '02-6543210', stage: 'new' }]);
   assert.equal(r.ok, false, '9-digit phone refused');
-  assert.equal(rows().length, 0);
+  assert.equal(r.error, 'invalid_lead');
+  assert.equal(r.invalidLeads[0].field, 'phone');
+  r = save([{ id: 'n1', name: '', phone: '123', stage: 'new' }]);
+  assert.equal(r.ok, false, 'a typed junk phone is refused even on a nameless lead');
+  assert.equal(r.invalidLeads[0].field, 'phone');
+  assert.equal(rows().length, 0, 'nothing written');
 });
 
 test('server: a valid new lead saves (any phone format normalizing to 0XXXXXXXXX)', () => {
@@ -147,19 +160,18 @@ test('server: a valid new lead saves (any phone format normalizing to 0XXXXXXXXX
   assert.equal(rows().length, 1);
 });
 
-test('server: an EXISTING incomplete lead is not blocked from other edits; a changed bad field is', () => {
+test('server: an EXISTING incomplete lead is not blocked; only a changed NON-EMPTY bad phone is refused', () => {
   const { save, rows } = boot([{ id: 'L1', name: 'דני', phone: '', stage: 'new' }]);
   let r = save([{ id: 'L1', name: 'דני', phone: '', stage: 'visit' }]);
   assert.equal(r.ok, true, 'stage change on a legacy incomplete lead');
   assert.equal(rows()[0].stage, 'visit');
   r = save([{ id: 'L1', name: 'דני', phone: '123', stage: 'visit' }]);
-  assert.equal(r.ok, false);
+  assert.equal(r.ok, false, 'a typed junk phone is refused');
   assert.equal(r.invalidLeads[0].field, 'phone');
   r = save([{ id: 'L1', name: 'X', phone: '', stage: 'visit' }]);
-  assert.equal(r.ok, false);
-  assert.equal(r.invalidLeads[0].field, 'name');
-  r = save([{ id: 'L1', name: 'דני לוי', phone: '0527654321', stage: 'visit' }]);
-  assert.equal(r.ok, true, 'completing the lead is allowed');
+  assert.equal(r.ok, true, 'a one-word name is allowed now');
+  r = save([{ id: 'L1', name: '', phone: '', stage: 'visit' }]);
+  assert.equal(r.ok, true, 'clearing the name is allowed (captured at admission)');
 });
 
 test('server: direct_admin intake phone records are exempt from the 2-word rule', () => {
@@ -168,9 +180,9 @@ test('server: direct_admin intake phone records are exempt from the 2-word rule'
   assert.equal(r.ok, true);
 });
 
-test('server: one invalid new lead refuses the whole save (other leads untouched)', () => {
+test('server: one invalid new lead (bad phone) refuses the whole save (other leads untouched)', () => {
   const { save, rows } = boot([{ id: 'L1', name: 'דני לוי', phone: '0527654321', stage: 'new' }]);
-  const r = save([{ id: 'L1', name: 'דני לוי', phone: '0527654321', stage: 'visit' }, { id: 'n2', name: 'רק', phone: '', stage: 'new' }]);
+  const r = save([{ id: 'L1', name: 'דני לוי', phone: '0527654321', stage: 'visit' }, { id: 'n2', name: 'רק', phone: '123', stage: 'new' }]);
   assert.equal(r.ok, false);
   assert.equal(rows()[0].stage, 'new', 'nothing written');
 });

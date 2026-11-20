@@ -443,7 +443,9 @@
 // (CHANGELOG-crm-released-stay-edit.md). From v152; monotonic.
 // v153 → v154: «זימון» WhatsApp to the manager when a meeting is scheduled
 // (CHANGELOG-crm-meeting-notify.md). From v153; monotonic.
-var CACHE_VERSION = 'v154';
+// v154 → v155: optional patient name / phone on first-call intake
+// (CHANGELOG-optional-lead-fields.md). From v154; monotonic.
+var CACHE_VERSION = 'v155';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

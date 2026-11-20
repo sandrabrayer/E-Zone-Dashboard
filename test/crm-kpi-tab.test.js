@@ -259,7 +259,7 @@ test('required fields: a lead needs a source and a house (or an «אמבולטו
   assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { source: '' }))), ['source']);
   assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { house: '' }))), ['house']);
   assert.deepEqual(core.leadFormErrors(Object.assign({}, ok, { house: '', meetingWith: 'אמבולטורי' })), {});
-  assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { contactName: 'אמא' }))), ['contactRelation']);
+  assert.deepEqual(core.leadFormErrors(Object.assign({}, ok, { contactName: 'אמא' })), {}, 'a contact name needs no relation now (relaxed 20/11/2026)');
   assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { contactName: 'א', contactRelation: 'אחר' }))), ['contactRelationOther']);
   assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { billingMode: 'contact' }))), ['contactPhone']);
   assert.deepEqual(Object.keys(core.leadFormErrors(Object.assign({}, ok, { billingMode: 'other', billingOther: '1' }))), ['billingOther']);

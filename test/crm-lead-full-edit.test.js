@@ -37,19 +37,26 @@ test('every field of the lead is editable, and the patch carries ONLY what chang
     assert.ok(!(k in p.patch), k + ' keeps its own control in the card');
 });
 
-test('the classic rules: a CHANGED name needs two words, a CHANGED phone must be an Israeli 10-digit number', () => {
-  assert.deepEqual(plan(LEAD(), { name: 'דנה' }), { errors: { name: 'יש להזין שם מלא (שם פרטי ושם משפחה)' }, patch: {} });
-  assert.deepEqual(plan(LEAD(), { name: '   ' }).errors, { name: 'יש להזין שם מלא (שם פרטי ושם משפחה)' });
-  assert.deepEqual(plan(LEAD(), { phone: '12345' }), { errors: { phone: 'יש להזין טלפון ישראלי תקין (10 ספרות)' }, patch: {} });
-  assert.deepEqual(plan(LEAD(), { phone: '' }).errors, { phone: 'יש להזין טלפון ישראלי תקין (10 ספרות)' });
+test('relaxed intake (20/11/2026): name OPTIONAL and one word is fine; phone optional but a typed phone must be valid', () => {
+  // a single-word name is accepted and a blank name clears the field — no error either way
+  assert.deepEqual(plan(LEAD(), { name: 'דנה' }), { errors: {}, patch: { name: 'דנה' } });
+  assert.deepEqual(plan(LEAD(), { name: '   ' }), { errors: {}, patch: { name: '' } });
+  // a typed but invalid phone is still refused (format guard kept); a blank phone just clears
+  assert.deepEqual(plan(LEAD(), { phone: '12345' }), { errors: { phone: 'טלפון ישראלי תקין (10 ספרות) או השאירי ריק' }, patch: {} });
+  assert.deepEqual(plan(LEAD(), { phone: '' }).patch, { phone: '' });
   assert.deepEqual(plan(LEAD(), { contactPhone: '99' }).errors, { contactPhone: 'טלפון הפונה אינו תקין' });
   assert.deepEqual(plan(LEAD(), { contactPhone: '' }).patch, { contactPhone: '' }, 'the contact phone may be cleared');
+  // Vered's own fields stay required
   assert.deepEqual(plan(LEAD(), { source: '' }).errors, { source: 'יש לבחור מקור ליד' });
   assert.deepEqual(plan(LEAD(), { house: '' }).errors, { house: 'יש לבחור בית (או «נפגש/ת עם: אמבולטורי»)' });
   assert.deepEqual(plan(Object.assign(LEAD(), { meetingWith: 'אמבולטורי' }), { house: '' }), { errors: {}, patch: { house: '' } });
-  // the same wording as the new-lead form; the same rule as Code.gs (a changed field only)
-  assert.equal(core.leadFormErrors({}).name, 'יש להזין שם מלא (שם פרטי ושם משפחה)');
-  assert.match(GS, /an EXISTING lead is checked only on a field whose value CHANGED/);
+  // the new-lead form no longer requires a name or a phone; it still requires source / house / assignedTo
+  const e = core.leadFormErrors({});
+  assert.equal(e.name, undefined, 'name not required on intake');
+  assert.equal(e.phone, undefined, 'phone not required on intake');
+  assert.equal(e.source, 'יש לבחור מקור ליד');
+  assert.equal(e.assignedTo, 'יש לבחור משוייך ל');
+  assert.match(GS, /a lead NAME is OPTIONAL/);
 });
 
 test('an old incomplete lead still saves its other fields (only a changed field is checked)', () => {
@@ -68,9 +75,10 @@ test('קשר למטופל: «אחר» stores the typed text; a legacy value is k
   const legacy = Object.assign(LEAD(), { contactRelation: 'דודה' });
   assert.equal(core.leadEditValues(legacy).contactRelation, 'דודה');
   assert.deepEqual(plan(legacy, { note: 'x' }).patch, { note: 'x' });
-  assert.deepEqual(plan(LEAD(), { contactRelation: '' }).errors, { contactRelation: 'יש לבחור קשר למטופל' });
+  // relaxed 20/11/2026: קשר למטופל is optional even when a contact name is given
+  assert.deepEqual(plan(LEAD(), { contactRelation: '' }).patch, { contactRelation: '' }, 'the relation may be cleared');
   const bare = Object.assign(LEAD(), { contactName: '', contactRelation: '' });
-  assert.deepEqual(plan(bare, { contactName: 'רון לוי' }).errors, { contactRelation: 'יש לבחור קשר למטופל' });
+  assert.deepEqual(plan(bare, { contactName: 'רון לוי' }), { errors: {}, patch: { contactName: 'רון לוי' } }, 'a named contact needs no relation');
   assert.deepEqual(plan(bare, { contactName: 'רון לוי', contactRelation: 'אח/אחות' }).patch, { contactName: 'רון לוי', contactRelation: 'אח/אחות' });
 });
 
@@ -108,8 +116,8 @@ test('dates: «נוצר» cannot be empty, in the future or out of range; «תא
 test('a patient\'s own lead («פנייה ישירה»): the source is a system key and is never rewritten; a blank phone is allowed', () => {
   const direct = Object.assign(LEAD(), { source: 'direct_approach', name: 'גל', phone: '' });
   assert.deepEqual(plan(direct, { source: 'גוגל', note: 'x' }).patch, { note: 'x' });
-  assert.deepEqual(plan(direct, { name: 'גלי' }).patch, { name: 'גלי' }, 'exempt from the two-word rule, as on the server');
-  assert.deepEqual(plan(direct, { name: '' }).errors, { name: 'יש להזין שם מלא (שם פרטי ושם משפחה)' }, 'never nameless');
+  assert.deepEqual(plan(direct, { name: 'גלי' }).patch, { name: 'גלי' }, 'a one-word name is fine for every source now');
+  assert.deepEqual(plan(direct, { name: '' }).patch, { name: '' }, 'name is optional on edit (captured at admission)');
   assert.deepEqual(plan(Object.assign(direct, { phone: '0501111111' }), { phone: '' }).patch, { phone: '' });
   assert.match(GS, /const LEAD_DIRECT_ADMIN_SOURCE = 'direct_admin';/);
   assert.match(GS, /const LEAD_DIRECT_APPROACH_SOURCE = 'direct_approach';/);
