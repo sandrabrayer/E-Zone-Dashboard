@@ -4823,9 +4823,12 @@ function renderMeetings() {
 /* Per-meeting edit modal (meetings board). Edits map to the underlying lead's
  * visitDate / visitTime / meetingWith and persist through the SAME per-row save
  * path the lead-card inline fields use (updateLead → saveAll) — no new endpoint.
- * The modal also carries a "שלח עדכון" WhatsApp button that builds the 'update'
- * message from the modal's CURRENT (live) field values and sends it to the lead.
- * On a successful save the board re-renders so the row reflects the change. */
+ * A family draft is prepared only from the source-confirmed appointment. */
+function openFamilyVisitForLead(lead, date, time) {
+  if (!window.FamilyVisit) { showError('לא ניתן לפתוח את פרטי הביקור. רענני את הדף.'); return; }
+  window.FamilyVisit.open(window, { id: lead.id, houseId: resolveHouseId(lead.house), date: date, time: time });
+}
+
 function openMeetingEditModal(m, opts) {
   const lead = state.leads.find(l => l.id === m.id);
   if (!lead) return;
@@ -4862,7 +4865,7 @@ function openMeetingEditModal(m, opts) {
           <select name="meetingWith">${withOptsHtml}</select>
         </div>
         <div class="form-actions">
-          <button type="button" class="mtg-wa mtg-update-wa" title="שלח עדכון בוואטסאפ">שלח עדכון</button>
+          <button type="button" class="mtg-wa mtg-update-wa" title="פרטי הביקור השמור למשפחה">פרטי הגעה למשפחה</button>
           <button type="button" class="btn" data-action="cancel">ביטול</button>
           <button type="submit" class="btn primary">שמור</button>
         </div>
@@ -4884,16 +4887,17 @@ function openMeetingEditModal(m, opts) {
   back.addEventListener('click', e => { if (e.target === back) close(); });
   if (reason) { try { dateInp.focus(); } catch (_) { /* no-op */ } }
 
-  /* "שלח עדכון" — build the update message from the modal's LIVE values (not the
-   * pre-edit meeting), so sending after changing a field reflects the new plan
-   * even before saving. Sent to the lead's billing/updates phone (falls back to
-   * the patient phone) via the shared PWA-safe opener. */
+  const eligible = () => lead.stage === 'visit' && !lead.meetingOutcome && !lead.meetingReportOutcome &&
+    withInp.value !== MEETING_WITH_AMBULATORY && !!dateInp.value && !!timeInp.value;
+  const syncFamilyButton = () => {
+    updateBtn.disabled = !eligible() || dateInp.value !== (m.date || '') ||
+      timeInp.value !== (m.time || '') || withInp.value !== (m.meetingWith || '');
+  };
+  [dateInp, timeInp, withInp].forEach(el => el.addEventListener('input', syncFamilyButton));
+  syncFamilyButton();
   updateBtn.onclick = () => {
-    const msg = buildMeetingMessage({
-      type: 'update', name: lead.name, manager: withInp.value,
-      house: lead.house, dateISO: dateInp.value, time: timeInp.value,
-    });
-    openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
+    syncFamilyButton();
+    if (!updateBtn.disabled) openFamilyVisitForLead(lead, dateInp.value, timeInp.value);
   };
 
   /* Date guard: amber while the year is out of range (quiet — no toast). */
@@ -4908,15 +4912,25 @@ function openMeetingEditModal(m, opts) {
     }
     return busyButton(submitBtn, 'save', async () => {
       cancelBtn.disabled = true;
+      updateBtn.disabled = true;
+      const slot = { visitDate: dateInp.value, visitTime: timeInp.value, meetingWith: withInp.value };
+      const changed = slot.visitDate !== (m.date || '') || slot.visitTime !== (m.time || '') || slot.meetingWith !== (m.meetingWith || '');
+      const fields = [dateInp, timeInp, withInp];
+      fields.forEach(el => { el.disabled = true; });
       try {
-        const ok = await updateLead(m.id, {
-          visitDate: dateInp.value, visitTime: timeInp.value, meetingWith: withInp.value,
-        });
-        if (ok) { close(); renderMeetings(); }
+        const ok = await updateLead(m.id, slot);
+        if (ok) {
+          const showDraft = changed && eligible() && back.isConnected;
+          close();
+          renderMeetings();
+          if (showDraft) openFamilyVisitForLead(lead, slot.visitDate, slot.visitTime);
+        }
         // Refused/failed: updateLead already rolled back and surfaced the error,
         // and busyButton's finally hands the button back for a retry.
       } finally {
+        fields.forEach(el => { el.disabled = false; });
         cancelBtn.disabled = false;
+        syncFamilyButton();
       }
     });
   };
@@ -5891,17 +5905,13 @@ function buildLeadCard(lead) {
 
   let stageFields = '';
   if (lead.stage === 'visit') {
-    /* "שלח הזמנה" — opens a WhatsApp invite to the LEAD. Enabled only when
-     * visitDate + visitTime + meetingWith are all set (see refreshInvite
-     * below). Reuses the shared .mtg-wa green styling. No data-field, so the
-     * generic autosave handler never touches it — it can't perturb the busy
-     * flag / autosave loop guard. */
+    /* The draft action reads back the saved appointment before offering any handoff. */
     stageFields = `
       <div class="lc-fields edit-only">
         <input type="date" data-field="visitDate" value="${lead.visitDate || ''}" />
         ${visitTimeSelectHTML(lead.visitTime)}
         ${meetingWithSelectHTML(lead)}
-        <button type="button" class="mtg-wa lc-wa-invite" title="שלח הזמנה בוואטסאפ">שלח הזמנה</button>
+        <button type="button" class="mtg-wa lc-wa-invite" title="פרטי הביקור השמור למשפחה">פרטי הגעה למשפחה</button>
       </div>`;
   } else if (lead.stage === 'paid') {
     stageFields = `
@@ -6036,34 +6046,20 @@ function buildLeadCard(lead) {
     billOther.addEventListener('change', () => applyBilling(billOther));
   }
 
-  /* WhatsApp invite button (visit stage only). Reads the three inline fields
-   * LIVE from the DOM — not from `lead` — so it reflects the user's current
-   * selections regardless of whether updateLead's async save has run yet, and
-   * stays correct even though a successful save does not re-render the card.
-   * A separate 'change' listener (addEventListener, so it never clobbers the
-   * autosave .onchange above) keeps its enabled state in sync. */
   const inviteBtn = card.querySelector('.lc-wa-invite');
   if (inviteBtn) {
     const dateInp = card.querySelector('[data-field="visitDate"]');
     const timeInp = card.querySelector('[data-field="visitTime"]');
     const withInp = card.querySelector('[data-field="meetingWith"]');
     const refreshInvite = () => {
-      const ready = !!((dateInp && dateInp.value) && (timeInp && timeInp.value) && (withInp && withInp.value));
-      inviteBtn.disabled = !ready;
+      inviteBtn.disabled = !dateInp.value || !timeInp.value || withInp.value === MEETING_WITH_AMBULATORY ||
+        !!lead.meetingOutcome || !!lead.meetingReportOutcome;
     };
     refreshInvite();
-    [dateInp, timeInp, withInp].forEach(el => el && el.addEventListener('change', refreshInvite));
+    [dateInp, timeInp, withInp].forEach(el => el.addEventListener('change', refreshInvite));
     inviteBtn.onclick = () => {
-      const dateISO = dateInp ? dateInp.value : '';
-      const time    = timeInp ? timeInp.value : '';
-      const manager = withInp ? withInp.value : '';
-      if (!dateISO || !time || !manager) return;   // defensive — button was disabled
-      const msg = buildMeetingMessage({
-        type: 'invite', name: lead.name, manager, house: lead.house, dateISO, time,
-      });
-      /* Outgoing communication targets the billing/updates phone (falls back to
-       * the patient phone when billingPhone is unset — see leadBillingPhone). */
-      openWhatsAppLink(meetingInviteWaUrl(leadBillingPhone(lead), msg));
+      refreshInvite();
+      if (!inviteBtn.disabled) openFamilyVisitForLead(lead, dateInp.value, timeInp.value);
     };
   }
 

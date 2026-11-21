@@ -6,7 +6,13 @@ on:
   pull_request:
     paths:
       - 'public/crm/**'
+      - 'apps-script/CommunicationEvents.gs'
+      - 'test/contact-events-browser.test.js'
+      - 'test/helpers/contact-fixture.js'
       - 'public/sw.js'
+      - 'public/family-visit.*'
+      - 'lib/family-visit-preview.js'
+      - 'test/family-visit-flow.test.js'
       - 'test/crm-search-admit-funder.test.js'
       - 'test/crm-today-card-open.test.js'
       - 'test/crm-continuity-handoff-gate.test.js'
@@ -43,12 +49,14 @@ jobs:
           export CHROMIUM_PATH="$(node -p "require('playwright').chromium.executablePath()")"
           mkdir -p test-results/crm-e2e
           node --test --test-concurrency=1 --test-reporter=tap \
+            test/contact-events-browser.test.js \
             test/crm-search-admit-funder.test.js \
             test/crm-today-card-open.test.js \
             test/crm-continuity-handoff-gate.test.js \
             test/crm-save-integrity.test.js \
             test/crm-save-discharge-browser.test.js \
             test/crm-shell-browser.test.js \
+            test/family-visit-flow.test.js \
             test/crm-switch-user-browser.test.js \
             > test-results/crm-e2e/browser.tap 2>&1
           # A green job must execute these journeys, never silently skip them.

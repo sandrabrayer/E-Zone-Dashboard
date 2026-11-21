@@ -33,7 +33,7 @@ test('lists: the seven actions are proxy-known; kinds / statuses / outcomes / ch
   assert.deepEqual(Array.from(g.run('TASK_KINDS')), ['call', 'meeting', 'collection', 'admission', 'discharge', 'continuity', 'review', 'other']);
   assert.deepEqual(Array.from(g.run('TASK_STATUSES')), ['open', 'done', 'cancelled']);
   assert.deepEqual(Array.from(g.run('CONTACT_OUTCOMES')), ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set', 'no_interest_now', 'bad_contact_details', 'stop_contact']);
-  assert.deepEqual(Array.from(g.run('CONTACT_CHANNELS')), ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other']);
+  assert.deepEqual(Array.from(g.run('CONTACT_CHANNELS')), ['phone', 'whatsapp', 'whatsapp_call', 'sms', 'email', 'in_person', 'other']);
   const cols = Array.from(g.run('TASK_COLUMNS'));
   assert.deepEqual(cols.slice(0, 15), ['id', 'kind', 'leadId', 'patientId', 'personId', 'houseId', 'title', 'reason', 'assignee', 'dueDate', 'dueTime', 'windowStart', 'windowEnd', 'status', 'source']);
   assert.ok(cols.includes('submissionId') && cols.includes('money') && cols.includes('contactEventId'));
@@ -187,4 +187,99 @@ test('getActivity shows the contact events on the subject (Dana: no money kinds,
   assert.ok(v.events.some((e) => e.kind === 'contact_logged'));
   const d = w.call({ action: 'getActivity', leadId: 'L1' }, DANA);
   assert.ok(d.events.some((e) => e.kind === 'contact_logged')); assert.equal(d.scope, 'no_money');
+});
+
+test('one WhatsApp contact records separately owned and dated promises; retries preserve the first plan and later task changes', () => {
+  const w = world();
+  const promises = [
+    { code: 'documents', assignee: 'דנה', dueDate: '2026-11-24' },
+    { code: 'catalog', assignee: 'ורד', dueDate: '2026-11-22' }
+  ];
+  const body = { action: 'logContact', submissionId: SID(78), contact: { leadId: 'L1', channel: 'whatsapp', outcome: 'spoke_follow_up' }, next: { promises } };
+  const result = w.call(body);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.createdTasks.map(t => [t.title,t.assignee,t.dueDate,t.money]), [
+    ['לשלוח קטלוג','ורד','2026-11-22',''], ['לבדוק אילו מסמכים חסרים','דנה','2026-11-24','']
+  ]);
+  assert.ok(result.createdTasks.every(t => t.contactEventId === result.event.eventId));
+  const stored = w.activity().find(e => e.kind === 'contact_logged');
+  assert.deepEqual(JSON.parse(stored.detailsJson).promises.map(x => x.code), ['catalog','documents']);
+  w.call({ action: 'completeTask', id: result.createdTasks[0].id, outcome: 'העותק לבדיקה' });
+  const retry = w.call({ ...body, next: { promises: promises.slice().reverse() } });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.createdTasks[0].status, 'done');
+  assert.equal(w.tasks().length, 2);
+  assert.equal(w.activity().filter(e => e.kind === 'contact_logged').length, 1);
+  for (const alter of [
+    { ...body, next: { promises: [promises[0]] } }, { ...body, contact: { ...body.contact, leadId: 'L2' } },
+    { ...body, next: { days: 2 } }, { ...body, next: { promises: [{ ...promises[0], assignee: 'סנדרה' }, promises[1]] } }
+  ]) assert.equal(w.call(alter).error, 'changed_promises');
+  assert.equal(w.tasks().length, 2);
+});
+
+test('invalid plans, missing owners or consent withdrawal cannot partly record a contact or complete a task', () => {
+  const w = world();
+  const task = w.call({ action: 'createTask', submissionId: SID(80), task: {kind:'call',leadId:'L1',title:'חזרה'} }).task;
+  const valid = {code:'status',assignee:'ורד',dueDate:'2026-12-01'};
+  const contact = {leadId:'L1',channel:'phone',outcome:'call_back_later',taskId:task.id};
+  const send = (next, override = {}) => w.call({ action:'logContact', submissionId:SID(81), contact: {...contact,...override}, next });
+  for (const bad of [[], [valid,valid], [valid,{...valid,code:'charge'}], [{...valid, assignee:''}], [{...valid, dueDate:'2026-02-31'}], [{...valid, assignee:'שירן'}]]) {
+    assert.equal(send({promises:bad}).error,'bad_promises');
+  }
+  assert.equal(send({promises:[valid],days:2}).error,'bad_promises');
+  for (const outcome of ['stop_contact','no_answer','no_interest_now','bad_contact_details']) assert.equal(send({promises:[valid]},{outcome}).error,'bad_promises');
+  assert.equal(w.tasks().length,1); assert.equal(w.tasks()[0].status,'open');
+  assert.equal(w.activity().filter(e => e.kind === 'contact_logged').length,0);
+  const other = send({promises:[valid]},{leadId:'OTHER'});
+  assert.equal(other.ok,true); assert.equal(other.completed,null);
+  assert.equal(w.tasks().find(t => t.id === task.id).status,'open');
+});
+
+test('retry after interruption recovers a missing promised task from the same submission', () => {
+  const w = world();
+  const body = { action:'logContact', submissionId:SID(84), contact:{leadId:'L1',outcome:'spoke_follow_up'}, next:{promises:[
+    {code:'catalog',assignee:'ורד',dueDate:'2026-12-03'}, {code:'documents',assignee:'דנה',dueDate:'2026-12-04'}
+  ]}};
+  w.g.run("var originalPromiseWrite = taskWriteRow_; taskWriteRow_ = function(sh, position, task) { if (task.id.endsWith('-documents')) throw Error('simulated interruption'); return originalPromiseWrite(sh, position, task); }");
+  try { w.call(body); } catch (_) {}
+  assert.equal(w.tasks().length,1);
+  w.g.run('taskWriteRow_ = originalPromiseWrite;');
+  const recovered = w.call(body); assert.equal(recovered.replayed,true); assert.equal(recovered.createdTasks.length,2);
+  assert.equal(w.tasks().length,2); assert.equal(w.activity().filter(e=>e.kind==='contact_logged').length,1);
+});
+
+test('a catalogue sent manually is reported once, with its edition and recipient, even after a failed task write', () => {
+  const w = world();
+  const conversation = w.call({ action: 'logContact', submissionId: SID(90),
+    contact: { leadId: 'L1', outcome: 'spoke_follow_up', channel: 'phone' }, next: { promises: [
+      { code: 'catalog', assignee: 'ורד', dueDate: '2026-12-01' },
+      { code: 'documents', assignee: 'דנה', dueDate: '2026-12-02' }
+    ] } });
+  const [catalog, documents] = conversation.createdTasks;
+  const report = { edition: 'מהדורת תרגול 2', recipient: 'אשת קשר לדוגמה', confirmed: true };
+  const body = { action: 'completeTask', id: catalog.id, catalogReport: report };
+  const reports = () => w.activity().filter(e => JSON.parse(e.detailsJson || '{}').confirmation === 'staff_report');
+  for (const patch of [{ confirmed: false }, { edition: ' ' }, { recipient: '' }, { recipient: 'x'.repeat(61) }]) {
+    assert.equal(w.call({ ...body, catalogReport: { ...report, ...patch } }).error, 'bad_catalog_report');
+  }
+  assert.equal(w.call({ ...body, id: documents.id }).error, 'not_found');
+  assert.equal(w.call(body, ORTAL).ok, false);
+  assert.equal(reports().length, 0);
+  w.g.run("var saveCatalogTask = taskWriteRow_; taskWriteRow_ = function() { throw Error('simulated write interruption'); };");
+  try { w.call(body); } catch (_) {}
+  w.g.run('taskWriteRow_ = saveCatalogTask;');
+  assert.equal(w.tasks().find(t => t.id === catalog.id).status, 'open');
+  assert.equal(reports().length, 1);
+  // Another staff member cannot replace the version or recipient of the saved report.
+  assert.equal(w.call({ ...body, catalogReport: { ...report, recipient: 'אחרת' } }, DANA).error, 'not_open');
+  const retried = w.call(body, DANA);
+  assert.equal(retried.ok, true);
+  assert.equal(retried.replayed, true);
+  assert.equal(retried.task.doneBy, 'ורד');
+  assert.match(retried.task.outcome, /מהדורת תרגול 2/);
+  assert.equal(retried.task.doneAt, reports()[0].occurredAt);
+  assert.equal(w.tasks().find(t => t.id === documents.id).status, 'open');
+  assert.equal(reports().length, 1);
+  const details = JSON.parse(reports()[0].detailsJson);
+  assert.deepEqual([details.edition, details.recipient, details.channel], [report.edition, report.recipient, 'whatsapp']);
 });

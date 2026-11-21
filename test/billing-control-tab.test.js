@@ -411,7 +411,7 @@ test('Code.gs: Ortal reaches ONLY CONTROLLER_ACTIONS (the tab + the «גבייה
   for (const action of known) {
     if (allowed.includes(action)) continue;
     const r = w.call({ action, lead: { id: 'L1' }, patient: { id: 'p1' }, payment: { id: 'x' } }, ORTAL);
-    const ownSecret = ['managersWork', 'managersOverview', 'managersHouse', 'occupancySnapshots'].includes(action);
+    const ownSecret = ['ingestCommunicationEvent', 'managersWork', 'managersOverview', 'managersHouse', 'occupancySnapshots'].includes(action);
     assert.deepEqual(r, ownSecret ? { ok: false, error: 'unauthorized' } : FORBIDDEN, action);
   }
   // An unknown action is refused too (never "unknown_action" with a read behind it).
@@ -853,7 +853,7 @@ test('server: Ortal gets 403 on EVERY Express /api/ route outside CONTROLLER_ROU
       assert.equal(stub.calls.length, 0, 'no refused route reached Apps Script');
       // The allowed ones.
       const me = await request(port, 'GET', '/api/me', { cookie: personal('ortal') });
-      assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', approver: false, deleter: false, finance: false,
+      assert.deepEqual(me.json, { ok: true, user: 'אורטל', auth: 'personal', contactDesk: false, approver: false, deleter: false, finance: false,
         capabilities: ['billingControl'], billingControl: true, view: 'controller', canConfirm: true, canAccount: true, canDiscount: false, canAmount: true, billingRead: true, ops: false, landing: 'classic' });
       const x = await request(port, 'GET', '/api/export/billing-control.xlsx', { cookie: personal('ortal') });
       assert.equal(x.status, 200);

@@ -92,9 +92,13 @@
   const MACCABI_STATES = [{ id: '', mark: '✗', label: 'חסר' }, { id: 'has', mark: '◐', label: 'אצל המטופל/ת — מעביר/ה' }, { id: 'in', mark: '✓', label: 'התקבל' }];
   const MACCABI_LINE = 'מסמכי מכבי:';
   const MACCABI_EMAIL = 'maccabi@ezone-house.co.il';
-  const MACCABI_MESSAGE = 'שלום, לצורך קבלת טיפול דרך קופ״ח מכבי יש לשלוח את המסמכים הבאים:\n'
-    + MACCABI_DOCS.map(function (d, i) { return (i + 1) + '. ' + d.label; }).join('\n')
-    + '\n\nיש לשלוח למייל ' + MACCABI_EMAIL + ' — סרוק וקריא 🙏';
+  function maccabiMessage(items) {
+    if (!items.length) return '';
+    return 'שלום, לצורך קבלת טיפול דרך קופ״ח מכבי יש לשלוח את המסמכים הבאים:\n'
+      + items.map(function (d, i) { return (i + 1) + '. ' + d.label; }).join('\n')
+      + '\n\nיש לשלוח למייל ' + MACCABI_EMAIL + ' — סרוק וקריא 🙏';
+  }
+  const MACCABI_MESSAGE = maccabiMessage(MACCABI_DOCS);
   function maccabiLineOf(note) {
     return s(note).split(/\r?\n/).filter(function (ln) { return ln.trim().indexOf(MACCABI_LINE) === 0; })[0] || '';
   }
@@ -112,6 +116,29 @@
       out[d.id] = st ? st.id : '';
     });
     return out;
+  }
+  // The staff reference stays complete. The draft for a particular family uses only
+  // known missing items. An ambiguous legacy mark or duplicate needs staff review.
+  function maccabiDocumentDraft(note, docs) {
+    const lines = s(note).split(/\r?\n/).filter(function (line) { return line.trim().indexOf(MACCABI_LINE) === 0; });
+    const review = { text: '', status: 'נדרשת בדיקת סימוני המסמכים' };
+    if (lines.length > 1) return review;
+    if (lines.length) {
+      const parts = lines[0].trim().slice(MACCABI_LINE.length).split('|');
+      const seen = new Set();
+      for (const part of parts) {
+        const item = part.trim();
+        const doc = MACCABI_DOCS.find(function (d) { return item.slice(1).trim() === d.short; });
+        if (!doc || seen.has(doc.id) || !MACCABI_STATES.some(function (st) { return st.mark === item.charAt(0); })) return review;
+        seen.add(doc.id);
+      }
+      // Old partial checklists can contain free-form status information outside the list.
+      if (seen.size !== MACCABI_DOCS.length) return review;
+    }
+    const missing = MACCABI_DOCS.filter(function (d) { return !docs[d.id]; });
+    if (missing.length) return { text: maccabiMessage(missing), status: 'בקשת מסמכים (' + missing.length + ')' };
+    const pending = MACCABI_DOCS.some(function (d) { return docs[d.id] === 'has'; });
+    return { text: '', status: pending ? 'ממתינים למסמכים שכבר בדרך' : 'כל המסמכים התקבלו' };
   }
   /* The note with the list written back: its line replaced in place, or added last. */
   function maccabiNoteWith(note, docs) {
@@ -161,7 +188,7 @@
     const rows = (Array.isArray(leads) ? leads : []).filter(isMaccabiLead).filter(function (l) { return !needle || (s(l.name) + ' ' + s(l.phone) + ' ' + houseName(l.house)).toLowerCase().indexOf(needle) >= 0; }).map(function (l) {
       const docs = maccabiDocsOf(l.note);
       const got = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'in'; }).length, onWay = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'has'; }).length;
-      return { id: s(l.id), name: s(l.name), phone: s(l.phone), house: houseName(l.house), stage: s(l.stage), assignedTo: s(l.assignedTo), created: s(l.created), docs: docs, got: got, onWay: onWay,
+      return { id: s(l.id), name: s(l.name), phone: s(l.phone), house: houseName(l.house), stage: s(l.stage), assignedTo: s(l.assignedTo), created: s(l.created), docs: docs, draft: maccabiDocumentDraft(l.note, docs), got: got, onWay: onWay,
         missing: MACCABI_DOCS.length - got - onWay, complete: got === MACCABI_DOCS.length };
     }).sort(function (a, b) { return (a.complete - b.complete) || (a.got - b.got) || a.name.localeCompare(b.name, 'he'); });
     return { rows: rows, count: rows.length, complete: rows.filter(function (r) { return r.complete; }).length, waiting: rows.filter(function (r) { return !r.complete; }).length };
@@ -2939,10 +2966,20 @@
     { id: 'call_back_later', label: 'התבקשנו לחזור במועד' }, { id: 'awaiting_decision', label: 'ממתינים להחלטה או למידע' },
     { id: 'meeting_set', label: 'נקבעה פגישה' }, { id: 'no_interest_now', label: 'אין עניין כרגע' },
     { id: 'bad_contact_details', label: 'פרטי הקשר אינם תקינים' }, { id: 'stop_contact', label: 'התבקשה הפסקת פניות' }];
-  const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
+  const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'whatsapp_call', label: 'שיחת וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
+  const INTAKE_PROMISES = [
+    { code: 'catalog', title: 'לשלוח קטלוג' },
+    { code: 'documents', title: 'לבדוק אילו מסמכים חסרים' },
+    { code: 'visit', title: 'לתאם ביקור עם המשפחה' },
+    { code: 'status', title: 'לחזור למשפחה עם עדכון סטטוס' }
+  ];
+  const CATALOG_MESSAGE = 'שלום, בהמשך לשיחתנו מצורף הקטלוג שביקשת. אפשר להשיב לנו כאן בכל שאלה.';
+  function isCatalogTask(t) {
+    return t.source === 'contact' && t.kind === 'admission' && /-catalog$/.test(t.id) && t.title === INTAKE_PROMISES[0].title;
+  }
   /* «קשר הבא»: no automatic default — the user picks (spec §8). */
   const NEXT_CHOICES = [{ id: 'd1', label: 'מחר', days: 1 }, { id: 'd3', label: 'בעוד 3 ימים', days: 3 }, { id: 'd7', label: 'בעוד שבוע', days: 7 }, { id: 'd14', label: 'בעוד שבועיים', days: 14 },
-    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'none', label: 'ללא משימת המשך' }];
+    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'promises', label: 'משימות המשך לשיחה' }, { id: 'none', label: 'ללא משימת המשך' }];
   const TASK_KINDS = [{ id: 'call', label: 'שיחה' }, { id: 'meeting', label: 'פגישה' }, { id: 'collection', label: 'גבייה', money: true }, { id: 'admission', label: 'קליטה' },
     { id: 'discharge', label: 'שחרור' }, { id: 'continuity', label: 'המשך טיפול' }, { id: 'review', label: 'בירור' }, { id: 'other', label: 'אחר' }];
   const TASK_KIND_LABELS = {}; TASK_KINDS.forEach(function (k) { TASK_KIND_LABELS[k.id] = k.label; });
@@ -2958,8 +2995,17 @@
     if (c.id === 'days') { const n = Number(v.days); if (!(n >= 1 && n <= 365 && n === Math.floor(n))) return null; const d = addDays(today, n); return { dueDate: d, dueTime: '', text: 'בעוד ' + n + ' ימים — ' + fmtDate(d) + ' (' + DAY_NAMES[weekdayOf(d)] + ')' }; }
     if (c.id === 'date') { if (!isoDateOk(v.date) || v.date < today) return null; const t = s(v.time); if (t && !timeOk(t)) return null; return { dueDate: v.date, dueTime: t, text: fmtDate(v.date) + (t ? ' ' + t : '') + ' (' + DAY_NAMES[weekdayOf(v.date)] + ')' }; }
     if (c.id === 'week') { if (!isoDateOk(v.weekStart)) return null; const ws = weekStart(v.weekStart), we = addDays(ws, 6); if (we < today) return null; return { windowStart: ws, windowEnd: we, text: 'במהלך השבוע ' + fmtDate(ws) + ' – ' + fmtDate(we) }; }
+    if (c.id === 'promises') {
+      const chosen = INTAKE_PROMISES.filter(function (item) { return v['nextPick_' + item.code] === true; });
+      const promises = chosen.map(function (item) { return { code: item.code, dueDate: s(v['nextDue_' + item.code]), assignee: s(v['nextOwner_' + item.code]) }; });
+      if (!promises.length || promises.some(function (item) { return !isoDateOk(item.dueDate) || item.dueDate < today || ASSIGNEES.indexOf(item.assignee) < 0; })) return null;
+      return { promises: promises, text: 'התחייבויות לשמירה: ' + promises.length };
+    }
     const ex = s(v.explanation);
     return ex.length >= 2 ? { none: true, explanation: ex, text: 'ללא משימת המשך — ' + ex } : null;
+  }
+  function contactNextPlan(v, today) {
+    return nextPlan(v.next, v.next === 'promises' ? v : { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today);
   }
   /* The contact form → errors by field. v = { when, time, withWhom, channel, reason, outcome, summary, next, nextDays, nextDate, nextTime, nextWeek, nextExplanation }. */
   function contactErrors(v, today) {
@@ -2972,18 +3018,23 @@
     if (s(v.summary).length > 1000) e.summary = 'עד 1000 תווים';
     if (s(v.withWhom).length > 80) e.withWhom = 'עד 80 תווים';
     if (!v.next) e.next = 'בחרי מה הלאה — אין ברירת מחדל';
-    else if (!nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today)) {
+    else if (v.next === 'promises' && ['spoke_follow_up', 'call_back_later', 'awaiting_decision', 'meeting_set'].indexOf(v.outcome) < 0) {
+      e.next = 'אפשר לשמור התחייבויות שסוכמו אחרי קשר עם המשפחה.';
+    } else if (v.next === 'promises' && !contactNextPlan(v, today)) {
+      e.next = 'בחרי לפחות התחייבות אחת ומלאי אחראי ותאריך לכל התחייבות שסומנה.';
+    } else if (!contactNextPlan(v, today)) {
       e.next = v.next === 'none' ? 'ללא משימת המשך — חובה להסביר (2 תווים לפחות)' : v.next === 'days' ? 'מספר ימים בין 1 ל-365' : v.next === 'week' ? 'בחרי שבוע (מהיום והלאה)' : 'תאריך מהיום והלאה';
     }
     return e;
   }
   /* The logContact body (Stage 1a contract). subject = { leadId } | { patientId }. */
   function contactBody(subject, v, sid, taskId, today, assignee) {
-    const plan = nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today);
+    const plan = contactNextPlan(v, today);
     // local wall-clock → the UTC instant the Activity sheet stores (no time → noon, so the day never shifts)
     const at = new Date(s(v.when) + 'T' + (timeOk(v.time) ? s(v.time) : '12:00') + ':00');
     const contact = Object.assign({}, subject, { occurredAt: isNaN(at.getTime()) ? '' : at.toISOString(), withWhom: s(v.withWhom), channel: s(v.channel), reason: s(v.reason), outcome: s(v.outcome), summary: s(v.summary) });
     if (taskId) contact.taskId = taskId;
+    if (plan.promises) return { action: 'logContact', submissionId: sid, contact: contact, next: { promises: plan.promises } };
     const next = plan.none ? { none: true, explanation: plan.explanation } : plan.windowStart ? { windowStart: plan.windowStart, windowEnd: plan.windowEnd } : { dueDate: plan.dueDate, dueTime: plan.dueTime || '' };
     if (!next.none) { next.title = s(v.nextTitle) || ('לחזור — ' + contactOutcomeLabel(v.outcome)); if (s(assignee)) next.assignee = s(assignee); if (s(v.summary)) next.reason = s(v.summary).slice(0, 300); }
     return { action: 'logContact', submissionId: sid, contact: contact, next: next };
@@ -3894,7 +3945,7 @@
       const subj = r.subjectKind + ':' + r.subjectId;
       const openAttr = ' data-open-' + r.subjectKind + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + (r.focusMeeting ? ' data-focus-meeting="1"' : '');
       if (r.task && (r.task.kind === 'call' || r.task.kind === 'collection')) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '" data-task-id="' + esc(r.task.id) + '">תיעוד שיחה</button>');
-      else if (r.task) b.push('<button type="button" class="btn small primary" data-task-done="' + esc(r.task.id) + '">סיום</button>');
+      else if (r.task) b.push(taskDoneButton(r.task));
       else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
       else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
       else if (r.classic && r.kind === 'to_verify' && r.receiptId && state.me && state.me.canConfirm) b.push('<button type="button" class="btn small verify" data-verify="' + esc(r.receiptId) + '" title="אימות שהכסף התקבל בבנק">אמת</button>');
@@ -4052,6 +4103,7 @@
         + '<select id="f-house"><option value="">כל הבתים</option>' + HOUSES.filter(function (h) { return h.id !== 'sde'; }).map(function (h) { return '<option value="' + esc(h.name) + '"' + (f.house === h.name ? ' selected' : '') + '>' + esc(h.name) + '</option>'; }).join('') + '</select>'
         + '<select id="f-owner"><option value="">כל האחראים</option>' + ASSIGNEES.map(function (o) { return '<option' + (f.owner === o ? ' selected' : '') + '>' + esc(o) + '</option>'; }).join('') + '</select>'
         + '<button type="button" class="btn primary" id="crm-new-lead">+ ליד חדש</button>'
+        + (state.me && state.me.contactDesk ? '<button type="button" class="btn" id="crm-communication-review">שיחות והודעות לשיוך</button>' : '')
         + '<button type="button" class="btn" data-view="maccabi" id="crm-maccabi-btn" aria-pressed="' + (state.view === 'maccabi') + '">מכבי <span class="n chip">' + c.leads.filter(isMaccabiLead).length + '</span></button>'
         + '<button type="button" class="btn" data-view="closed" aria-pressed="' + (state.view === 'closed') + '">לידים סגורים</button>'
         + (state.tasks && state.index ? '<button type="button" class="btn" data-area="triage">רשומות שדורשות בירור <span class="n chip">' + triageQueue(c, state.tasks, state.index, state.today).length + '</span></button>' : '') + '</div>';
@@ -4124,16 +4176,19 @@
     function renderMaccabi(c) {
       const v = maccabiView(c.leads, state.filters.q);
       let html = '<div class="group-title" id="crm-maccabi-title">לידים של מכבי ' + chip(v.waiting ? 'today' : 'ok', v.count + ' לידים · ' + v.complete + ' עם כל המסמכים · ' + v.waiting + ' חסרים') + '</div>'
-        + '<div class="toolbar"><button type="button" class="btn primary" id="crm-new-maccabi">+ ליד מכבי</button><button type="button" class="btn" data-maccabi-copy>העתק את ההודעה למשפחה</button>'
+        + '<div class="toolbar"><button type="button" class="btn primary" id="crm-new-maccabi">+ ליד מכבי</button><button type="button" class="btn" data-maccabi-copy>העתקת הרשימה הכללית</button>'
         + '<a class="btn" href="mailto:' + esc(MACCABI_EMAIL) + '">' + esc(MACCABI_EMAIL) + '</a></div>'
-        + '<details class="maccabi-msg" id="crm-maccabi-msg"><summary>ההודעה שנשלחת — המסמכים הנדרשים</summary><pre>' + esc(MACCABI_MESSAGE) + '</pre></details>'
+        + '<details class="maccabi-msg" id="crm-maccabi-msg"><summary>רשימת המסמכים הכללית לצוות</summary><pre>' + esc(MACCABI_MESSAGE) + '</pre></details>'
         + '<p class="na">לחיצה על מסמך מחליפה מצב: ✗ חסר → ◐ אצל המטופל/ת (מעביר/ה) → ✓ התקבל. נשמר מיד, בשורת «מסמכי מכבי» בהערות של הליד. ליד נכנס לרשימה כשהמקור או השם שלו כולל «מכבי».</p>';
       if (!v.rows.length) return html + '<p class="na" id="crm-maccabi-none">אין לידים של מכבי' + (s(state.filters.q) ? ' בחיפוש הזה' : '') + '. «+ ליד מכבי» פותח ליד חדש עם המקור «מכבי».</p>';
       html += '<div class="tbl-wrap"><table class="tbl" id="crm-maccabi"><thead><tr><th>ליד</th><th>הודעה</th><th>מצב</th>' + MACCABI_DOCS.map(function (d) { return '<th title="' + esc(d.label) + '">' + esc(d.short) + '</th>'; }).join('') + '<th>בית</th><th>שלב</th></tr></thead><tbody>'
         + v.rows.map(function (r) {
           const wa = waDigits(r.phone);
           return '<tr data-maccabi-lead="' + esc(r.id) + '"><td class="link" data-open-lead="' + esc(r.id) + '">' + esc(r.name) + '</td>'
-            + '<td>' + (wa ? '<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/' + esc(wa) + '?text=' + encodeURIComponent(MACCABI_MESSAGE) + '">וואטסאפ</a>' : '<span class="na">אין טלפון</span>') + '</td>'
+            + '<td>' + (r.draft.text ? '<details class="maccabi-msg maccabi-personal"><summary>' + esc(r.draft.status) + '</summary>'
+              + '<p class="na">לפני מסירה ודאי שהרשימה עדכנית ושאיש הקשר מורשה לקבלה.</p><pre>' + esc(r.draft.text) + '</pre>'
+              + (wa ? '<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/' + esc(wa) + '?text=' + encodeURIComponent(r.draft.text) + '">פתיחת טיוטה בוואטסאפ</a>' : '<span class="na">אין טלפון</span>')
+              + '</details>' : '<span class="na">' + esc(r.draft.status) + '</span>') + '</td>'
             + '<td>' + chip(r.complete ? 'ok' : r.got + r.onWay ? 'today' : 'late', r.got + '/' + MACCABI_DOCS.length + (r.onWay ? ' · ' + r.onWay + ' בדרך' : '')) + '</td>'
             + MACCABI_DOCS.map(function (d) {
               const st = MACCABI_STATES.filter(function (m) { return m.id === r.docs[d.id]; })[0] || MACCABI_STATES[0];
@@ -5794,6 +5849,7 @@
         + '<label>שעה <input type="time" name="visitTime" value="' + esc(l.visitTime) + '"></label>'
         + '<label>נפגש/ת עם <select name="meetingWith">' + opts(managers, l.meetingWith, true) + '</select></label>'
         + '<button type="submit" class="btn small primary">שמירה</button></form>'
+        + (familyVisitSlot(l) ? '<button type="button" class="btn small" data-family-visit="' + esc(l.id) + '">פרטי הגעה למשפחה</button>' : '')
         + (managerScheduledLink(l) ? '<p class="na" data-manager-invite="' + esc(l.id) + '">זימון ל' + esc(l.meetingWith) + ' שהפגישה נקבעה איתו/ה — <a class="btn small primary" target="_blank" rel="noopener" href="' + esc(managerScheduledLink(l)) + '">שליחה בוואטסאפ</a></p>' : '')
         + '</details>'
         + (l.stage === 'visit' && s(l.visitDate) ? patientChangeBlock(l) : '')
@@ -5897,6 +5953,19 @@
         + '<label class="wide">הערה למנהל/ת (לא חובה) <input type="text" name="note" maxlength="200"><span class="err" data-err="note"></span></label>'
         + '<p class="na">נשלחת הודעת וואטסאפ מוכנה ל' + esc(l.meetingWith || 'מנהל/ת הבית') + ' — יש ללחוץ «שליחה» בוואטסאפ.</p>'
         + '<button type="submit" class="btn small primary">שמירה והודעה למנהל/ת</button></form></details>';
+    }
+    function familyVisitSlot(l) {
+      if (!l || l.stage !== 'visit' || !l.visitDate || !l.visitTime || l.meetingOutcome || l.meetingReportOutcome ||
+          l.meetingWith === MEETING_WITH_AMBULATORY || !houseId(l.house)) return null;
+      return { id: l.id, houseId: houseId(l.house), date: l.visitDate, time: l.visitTime };
+    }
+    function openSavedFamilyVisit(id) {
+      if (state.saving || !state.drawer || state.drawer.kind !== 'lead' || state.drawer.id !== id) return;
+      const l = compute(state.data, state.today).leads.find(function (lead) { return lead.id === id; });
+      const slot = familyVisitSlot(l);
+      if (!slot) return;
+      if (!win.FamilyVisit) { toast('לא ניתן לפתוח את פרטי הביקור. רענני את הדף.', true); return; }
+      win.FamilyVisit.open(win, slot);
     }
     /* The manager's WhatsApp link for the lead's current patient-side change, or ''. */
     function managerChangeLink(l) {
@@ -6150,7 +6219,7 @@
         if (!tl) return;
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ציר הפעילות לא זמין (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
-        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
+        tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div>' + (state.me && state.me.contactDesk && e.details && e.details.canForgetNumber === true && e.leadId ? '<button type="button" class="btn small" data-comm-forget="' + esc(e.eventId) + '" data-lead="' + esc(e.leadId) + '">ביטול השיוך האוטומטי למספר</button>' : '') + '</li>'; }).join('');
       });
     }
     /* C9: the «חשבון» pane — the area's two reads (loaded once, shared), one patient. */
@@ -6719,6 +6788,110 @@
           .then(function (ok2) { triageDecided(); renderMain(); return ok2; });
       });
     }
+    root.addEventListener('click', function (event) {
+      const b = event.target.closest && event.target.closest('[data-comm-forget]');
+      if (!b || !state.me || !state.me.contactDesk || !state.drawer) return;
+      if (!b.dataset.confirm) { b.dataset.confirm = '1'; b.textContent = 'אישור ביטול השיוך לאירועים עתידיים'; return; }
+      const view = state.drawer; b.disabled = true;
+      win.fetch('/api/communications/resolve', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision: 'forget', id: b.dataset.commForget, leadId: b.dataset.lead }) })
+        .then(function (r) { return r.json(); }).then(function (r) {
+          if (!r || !r.ok) throw new Error('forget');
+          if (state.drawer === view) { toast('אירועים עתידיים מהמספר ימתינו לשיוך'); openDrawer(view.kind, view.id, true); }
+        }).catch(function () { if (state.drawer === view) { b.disabled = false; toast('לא התקבל אישור לביטול השיוך. אפשר לנסות שוב.', true); } });
+    });
+    function openCommunicationReview() {
+      if (!state.me || !state.me.contactDesk) return;
+      const dr = $('#crm-drawer'), view = { kind: 'communications' };
+      state.drawer = view;
+      dr.innerHTML = '<div class="drawer-head"><h2>שיחות והודעות לשיוך</h2><button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></div>'
+        + '<section class="comm-review" aria-label="אירועים לשיוך"><p role="status">טוען…</p></section>';
+      dr.setAttribute('aria-hidden', 'false'); $('#crm-scrim').setAttribute('data-open', 'true');
+      dr.querySelector('#crm-drawer-close').focus();
+      const panel = dr.querySelector('.comm-review');
+      function fetchReview() {
+        panel.innerHTML = '<p role="status">טוען…</p>';
+        win.fetch('/api/communications/review', { credentials: 'same-origin', cache: 'no-store' })
+          .then(function (r) { return r.json(); }).then(function (data) {
+            if (state.drawer !== view) return;
+            if (!data || !data.ok || !Array.isArray(data.events) || !Array.isArray(data.leads)) throw new Error('review');
+            if (!data.events.length) { panel.innerHTML = '<p role="status">אין כרגע שיחות או הודעות שממתינות לשיוך.</p>'; return; }
+            panel.innerHTML = '<p role="status">' + esc(data.total) + ' אירועים ממתינים לשיוך' +
+              (data.total > data.events.length ? ' · מוצגים ' + esc(data.events.length) + ' הוותיקים ביותר' : '') + '</p><div data-comm-list></div><div data-comm-edit></div>';
+            const list = panel.querySelector('[data-comm-list]'), edit = panel.querySelector('[data-comm-edit]');
+            data.events.forEach(function (entry) {
+              const article = doc.createElement('article');
+              article.innerHTML = '<strong>' + esc(entry.summary) + '</strong><div>' + esc(whenLocal(entry.occurredAt)) + ' · <bdi>' +
+                esc(entry.phone ? entry.phone.replace(/^\+972/, '0') : 'מספר חסוי או לא זמין') + '</bdi></div><button type="button" class="btn small">בדיקה ושיוך</button>';
+              const selectEvent = article.querySelector('button');
+              selectEvent.addEventListener('click', function () {
+                list.hidden = true;
+                edit.innerHTML = '<h3>' + esc(entry.summary) + '</h3><p>' + esc(whenLocal(entry.occurredAt)) + ' · <bdi>' + esc(entry.phone ? entry.phone.replace(/^\+972/, '0') : 'מספר חסוי או לא זמין') + '</bdi></p>'
+                  + '<form class="comm-form"><label>פנייה לשיוך<select name="lead"><option value="">בחירת פנייה</option></select></label>'
+                  + '<label><input type="checkbox" name="verified"> בדקתי שהאירוע שייך לפנייה שבחרתי</label>'
+                  + '<label><input type="checkbox" name="remember"> לשייך גם אירועים עתידיים מהמספר לפנייה זו, כל עוד המספר ייחודי</label>'
+                  + '<p role="status"></p><div class="comm-actions"><button type="submit" class="btn primary">שמירת השיוך</button>'
+                  + '<button data-comm-dismiss type="button" class="btn">סימון כאירוע שאינו שייך לפנייה</button><button data-comm-back type="button" class="btn">חזרה לרשימה</button></div></form>';
+                const form = edit.querySelector('form'), notice = form.querySelector('[role="status"]');
+                const select = form.elements.lead, remember = form.elements.remember;
+                const leads = data.leads.slice().sort(function (a, b) {
+                  return Number(entry.suggestions.indexOf(b.id) >= 0) - Number(entry.suggestions.indexOf(a.id) >= 0) || a.name.localeCompare(b.name, 'he') || a.id.localeCompare(b.id);
+                });
+                leads.forEach(function (l) {
+                  const opt = doc.createElement('option'); opt.value = l.id;
+                  const card = rawLead(l.id);
+                  const detail = [card && card.house ? houseName(card.house) : '', card && card.created ? fmtDate(card.created) : '', l.id].filter(Boolean).join(' · ');
+                  opt.textContent = (l.name || 'ללא שם') + ' · ' + detail + (entry.suggestions.indexOf(l.id) >= 0 ? ' · מספר תואם' : '');
+                  select.appendChild(opt);
+                });
+                const allowRemember = function () {
+                  const enabled = !!select.value && entry.rememberLead === select.value;
+                  remember.disabled = !enabled; if (!enabled) remember.checked = false;
+                };
+                select.addEventListener('change', function () { form.elements.verified.checked = false; remember.checked = false; allowRemember(); });
+                allowRemember(); select.focus();
+                edit.querySelector('[data-comm-back]').onclick = function () { edit.innerHTML = ''; list.hidden = false; selectEvent.focus(); };
+                let dismissConfirmed = false, busy = false;
+                function save(decision) {
+                  if (busy) return;
+                  if (decision === 'link' && (!select.value || !form.elements.verified.checked)) { notice.textContent = 'יש לבחור פנייה ולסמן שהשיוך נבדק.'; return; }
+                  if (decision === 'dismiss' && !dismissConfirmed) {
+                    dismissConfirmed = true; notice.textContent = 'האירוע יוסר מרשימת הממתינים. לאישור יש ללחוץ שוב.';
+                    edit.querySelector('[data-comm-dismiss]').textContent = 'אישור הסרה מהרשימה'; return;
+                  }
+                  busy = true;
+                  const payload = { id: entry.id, decision: decision, leadId: select.value, verifiedContact: form.elements.verified.checked, remember: remember.checked };
+                  const buttons = Array.from(form.querySelectorAll('button,select,input'));
+                  buttons.forEach(function (el) { el.disabled = true; });
+                  notice.textContent = 'שומר…';
+                  win.fetch('/api/communications/resolve', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+                    .then(function (r) { return r.json(); }).then(function (result) {
+                      if (!result || !result.ok) throw new Error(result && result.error || 'unavailable');
+                      reloadTasks();
+                      if (state.drawer !== view) return;
+                      toast(decision === 'link' ? 'האירוע שויך לכרטיס הפנייה' : 'האירוע הוסר מהרשימה'); fetchReview();
+                    }).catch(function (error) {
+                      if (state.drawer !== view) return;
+                      busy = false; buttons.forEach(function (el) { el.disabled = false; }); allowRemember();
+                      const messages = { already_resolved: 'האירוע טופל בעמדה אחרת. יש לרענן את הרשימה.', phone_not_unique: 'המספר משותף, או שאינו תואם לרשומה יחידה. אפשר לבטל את סימון השיוך העתידי ולשמור רק את האירוע הזה.', closed_or_unknown_lead: 'הפנייה שנבחרה אינה פתוחה. יש לרענן את הרשימה.' };
+                      notice.textContent = messages[error.message] || 'לא התקבל אישור שמירה. אפשר לרענן או לנסות שוב.';
+                      const retry = doc.createElement('button'); retry.type = 'button'; retry.className = 'btn small'; retry.textContent = 'רענון הרשימה'; retry.onclick = fetchReview; notice.appendChild(retry);
+                    });
+                }
+                form.onsubmit = function (event) { event.preventDefault(); save('link'); };
+                edit.querySelector('[data-comm-dismiss]').onclick = function () { save('dismiss'); };
+              });
+              list.appendChild(article);
+            });
+          }).catch(function () {
+            if (state.drawer !== view) return;
+            panel.innerHTML = '<p role="status">לא ניתן לטעון את רשימת האירועים.</p><button type="button" class="btn">ניסיון נוסף</button>';
+            panel.querySelector('button').onclick = fetchReview;
+          });
+      }
+      fetchReview();
+    }
+
     function closeDrawer() { $('#crm-drawer').setAttribute('aria-hidden', 'true'); $('#crm-scrim').removeAttribute('data-open'); state.drawer = null; state.account = null; state.report = null; state.small = null; state.contact = null; state.leadEdit = null; }
 
     /* ---- Stage 1c: tasks + the contact log ---- */
@@ -6734,6 +6907,9 @@
         if (state.drawer && !state.contact) openDrawer(state.drawer.kind, state.drawer.id, true);
       });
     }
+    function taskDoneButton(t) {
+      return '<button type="button" class="btn small primary" data-task-done="' + esc(t.id) + '">' + (isCatalogTask(t) ? 'הכנה ותיעוד שליחת קטלוג' : 'סיום') + '</button>';
+    }
     function taskRowHtml(r, inCard) {
       const t = r.task;
       const isCall = s(t.kind) === 'call' || s(t.kind) === 'collection';
@@ -6743,16 +6919,35 @@
         + '<span>' + (inCard ? esc(t.reason || '—') : esc(t.title) + (t.reason ? '<br><span class="sub">' + esc(t.reason) + '</span>' : '')) + '</span>'
         + '<span>' + esc(t.assignee || '—') + '</span><span>' + esc(r.when) + '</span>'
         + '<span>' + chip(r.state === 'undated' ? 'wait' : r.state, r.state === 'undated' ? 'ללא תאריך' : stateText(r.state)) + '</span>'
-        + '<span class="toolbar">' + (isCall ? '<button type="button" class="btn small primary" data-contact-open="' + esc(r.subject.kind + ':' + r.subject.id) + '" data-task-id="' + esc(t.id) + '">תיעוד שיחה</button>' : '<button type="button" class="btn small primary" data-task-done="' + esc(t.id) + '">סיום</button>')
+        + '<span class="toolbar">' + (isCall ? '<button type="button" class="btn small primary" data-contact-open="' + esc(r.subject.kind + ':' + r.subject.id) + '" data-task-id="' + esc(t.id) + '">תיעוד שיחה</button>' : taskDoneButton(t))
         + '<button type="button" class="btn small" data-task-resched="' + esc(t.id) + '">שינוי מועד</button>'
         + (inCard ? '<button type="button" class="btn small" data-task-more="' + esc(t.id) + '">עוד…</button>' : '') + '</span></div>'
         + '<div class="task-form" data-task-form="' + esc(t.id) + '"></div>';
     }
-    function renderTasksPane(subject) {
+    function renderCardTaskRows(subject, tasks) {
       const c = compute(state.data, state.today);
-      const rows = state.tasks ? taskQueue(tasksFor(subject, state.tasks), c, state.today) : [];
-      let html = state.tasks ? (rows.length ? '<div class="rows">' + rows.map(function (r) { return taskRowHtml(r, true); }).join('') + '</div>' : '<p class="na">אין משימות פתוחות.</p>')
-        : (state.tasks === undefined ? '<p class="na">טוען…</p>' : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>');
+      const rows = tasks ? taskQueue(tasksFor(subject, tasks), c, state.today) : [];
+      return tasks ? (rows.length ? '<div class="rows">' + rows.map(function (r) { return taskRowHtml(r, true); }).join('') + '</div>' : '<p class="na">אין משימות פתוחות.</p>')
+        : (tasks === undefined ? '<p class="na">טוען…</p>' : '<p class="na">המידע אינו זמין <button type="button" class="btn small" data-tasks-retry>נסי שוב</button></p>');
+
+    }
+    function refreshCommunicationTasks(view) {
+      if (!state.me || !state.me.contactDesk || !view || view.kind !== 'lead') return;
+      const subject = { leadId: view.id };
+      api('getTasks', { status: 'open', leadId: view.id }).then(function (r) {
+        if (state.drawer !== view || view.tab !== 'tasks' || !r || !r.ok || !Array.isArray(r.tasks)) return;
+        const target = $('#crm-card-task-rows');
+        if (!target || target.querySelector('.task-form form')) return;
+        if (Array.isArray(state.tasks)) {
+          state.tasks = state.tasks.filter(function (t) { return t.leadId !== view.id; }).concat(r.tasks);
+        }
+        target.innerHTML = renderCardTaskRows(subject, r.tasks);
+        const tab = $('#crm-drawer [data-tab="tasks"]');
+        if (tab) tab.textContent = 'משימות' + (r.tasks.length ? ' (' + r.tasks.length + ')' : '');
+      }).catch(function () {});
+    }
+    function renderTasksPane(subject) {
+      let html = '<div id="crm-card-task-rows">' + renderCardTaskRows(subject, state.tasks) + '</div>';
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
       html += '<details class="act"><summary>משימה חדשה</summary><form data-form="task-new" novalidate>'
         + '<label>סוג <select name="kind">' + TASK_KINDS.filter(function (k) { return !k.money || (state.me && state.me.finance); }).map(function (k) { return '<option value="' + k.id + '">' + esc(k.label) + '</option>'; }).join('') + '</select>' + err('kind') + '</label>'
@@ -6776,6 +6971,21 @@
           + '<label>תאריך <input type="date" name="dueDate" value="' + esc(s(t.dueDate)) + '">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime" value="' + esc(s(t.dueTime)) + '">' + err('dueTime') + '</label>'
           + '<label class="wide">סיבה' + (t.source === 'contact' ? ' * (מועד שהובטח למשפחה)' : '') + ' <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת המועד</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
+      } else if (kind === 'done' && isCatalogTask(t)) {
+        const c = compute(state.data, state.today);
+        const lead = c.leads.find(function (l) { return l.id === t.leadId; });
+        const patient = !lead && c.patients.find(function (p) { return p.id === t.patientId; });
+        const names = lead ? [lead.name, lead.contactName] : [patient && patient.name];
+        const listId = 'catalog-recipients-' + (el.closest('#crm-drawer') ? 'card-' : 'day-') + id;
+        el.innerHTML = '<form data-form="catalog-report" data-task="' + esc(id) + '" class="inline" novalidate>'
+          + '<label class="wide">נוסח להודעה<textarea readonly name="message" rows="2">' + esc(CATALOG_MESSAGE) + '</textarea></label>'
+          + '<button type="button" class="btn small" data-catalog-copy>העתקת הנוסח</button>'
+          + '<p class="wide">בוואטסאפ העסקי של איזון, פתחי את השיחה עם הנמען שאישר לקבל מידע וצרפי את הקטלוג המאושר למשפחות.</p>'
+          + '<label>שם הקטלוג והגרסה שנשלחה<input type="text" name="edition" maxlength="80" required>' + err('edition') + '</label>'
+          + '<label>למי נשלח הקטלוג<input type="text" name="recipient" list="' + esc(listId) + '" maxlength="60" required>' + err('recipient') + '</label>'
+          + '<datalist id="' + esc(listId) + '">' + Array.from(new Set(names.filter(Boolean))).map(function (n) { return '<option value="' + esc(n) + '"></option>'; }).join('') + '</datalist>'
+          + '<label class="wide"><input type="checkbox" name="confirmed"> אני מאשרת ששלחתי את הקטלוג בוואטסאפ</label>' + err('confirmed')
+          + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת דיווח השליחה</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">סגירה</button></form>';
       } else if (kind === 'done') {
         el.innerHTML = '<form data-form="task-done" data-task="' + esc(id) + '" novalidate class="inline"><label class="wide">מה נעשה <input type="text" name="outcome" maxlength="300"></label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">סימון כהושלם</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
@@ -6834,6 +7044,13 @@
         + '<div class="next-extra"><label data-next-for="days">מספר ימים <input type="number" name="nextDays" min="1" max="365"></label>'
         + '<label data-next-for="date">תאריך <input type="date" name="nextDate" min="' + esc(state.today) + '"></label><label data-next-for="date">שעה <input type="time" name="nextTime"></label>'
         + '<label data-next-for="week">יום בשבוע המבוקש <input type="date" name="nextWeek" min="' + esc(state.today) + '"></label>'
+        + '<div class="intake-promises" data-next-for="promises" hidden><p>סמני מה סוכם. לכל התחייבות תיפתח משימה בכרטיס וב״היום שלי״.</p>'
+        + INTAKE_PROMISES.map(function (item) {
+          const who = ASSIGNEES.indexOf(state.me && state.me.user) >= 0 ? state.me.user : '';
+          return '<div class="intake-promise"><label class="radio"><input type="checkbox" name="nextPick_' + item.code + '"> ' + esc(item.title) + '</label>'
+            + '<div data-promise-fields="' + item.code + '" hidden><label>אחראי <select name="nextOwner_' + item.code + '">' + opts(ASSIGNEES, who, true) + '</select></label>'
+            + '<label>מועד מוסכם <input type="date" name="nextDue_' + item.code + '" min="' + esc(state.today) + '"></label></div></div>';
+        }).join('') + '</div>'
         + '<label data-next-for="none" class="wide">למה אין המשך *<input type="text" name="nextExplanation" maxlength="300"></label>'
         + '<label data-next-for="task" class="wide">כותרת המשימה <input type="text" name="nextTitle" maxlength="120" placeholder="לחזור — (ברירת מחדל לפי התוצאה)"></label>'
         + '<label data-next-for="task">אחראי <select name="nextAssignee">' + opts(ASSIGNEES, task && task.assignee ? task.assignee : (state.me && state.me.user), true) + '</select></label></div>'
@@ -6850,11 +7067,12 @@
         tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
-    function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.value; }); return v; }
+    function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.type === 'checkbox' ? el.checked : el.value; }); return v; }
     function refreshNextPreview(f) {
       const v = contactValues(f);
-      const plan = v.next ? nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, state.today) : null;
-      doc.querySelectorAll('#crm-drawer [data-next-for]').forEach(function (el) { const k = el.dataset.nextFor; el.hidden = !(k === v.next || (k === 'task' && v.next && v.next !== 'none')); });
+      const plan = v.next ? contactNextPlan(v, state.today) : null;
+      doc.querySelectorAll('#crm-drawer [data-next-for]').forEach(function (el) { const k = el.dataset.nextFor; el.hidden = !(k === v.next || (k === 'task' && v.next && v.next !== 'none' && v.next !== 'promises')); });
+      f.querySelectorAll('[data-promise-fields]').forEach(function (el) { el.hidden = v['nextPick_' + el.dataset.promiseFields] !== true; });
       const p = $('#crm-next-preview'); if (p) p.textContent = plan ? plan.text : (v.next ? 'השלימי את הפרטים' : 'בחרי מועד — התאריך בפועל יוצג כאן.');
     }
     /* Save = ONE logContact. A failure keeps the text and allows a retry with the SAME submission id (idempotent server-side); nothing is marked done before the server confirms. */
@@ -6873,10 +7091,11 @@
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
           state.saving = false; clearBusy();
-          const why = contactAccepted(res);
+          let why = contactAccepted(res);
+          if (!why && body.next.promises && (!Array.isArray(res.createdTasks) || res.createdTasks.length !== body.next.promises.length)) why = 'טרם התקבל אישור לכל ההתחייבויות. נסי שוב.';
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           const back = state.contact; state.contact = null;
-          toast('השיחה נשמרה ✓' + (res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
+          toast('השיחה נשמרה ✓' + (body.next.promises ? ' · משימות שנשמרו: ' + res.createdTasks.length : res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
           if (state.area === 'triage') { triageDecided(); closeDrawer(); return reloadTasks().then(function () { return true; }); }
           state.drawer = { kind: back.kind, id: back.id, tab: 'tasks' };
           return reloadTasks().then(function () { openDrawer(back.kind, back.id, true); return true; });
@@ -6886,13 +7105,25 @@
 
     /* events (delegated; filters, sort and scroll survive opening a card) */
     root.addEventListener('click', function (ev) {
+      const family = ev.target.closest ? ev.target.closest('[data-family-visit]') : null;
+      if (family) {
+        const form = family.parentElement.querySelector('form[data-form="meeting"]');
+        const id = family.dataset.familyVisit;
+        const lead = compute(state.data, state.today).leads.find(function (l) { return l.id === id; });
+        if (!lead || (form && (form.elements.visitDate.value !== lead.visitDate ||
+            form.elements.visitTime.value !== lead.visitTime || form.elements.meetingWith.value !== lead.meetingWith))) {
+          toast('שמרי את השינוי במועד לפני הכנת ההודעה למשפחה.', true);
+          return;
+        }
+        return openSavedFamilyVisit(id);
+      }
       const cs = ev.target.closest ? ev.target.closest('[data-continuity-save]') : null;
       if (cs) return saveContinuity(cs.dataset.continuitySave);
       // The manager's WhatsApp (CHANGELOG-crm-vered-feedback-1104.md): a standalone PWA drops
       // <a target=_blank> to another origin, so open it from the click (never blocked), else navigate.
       const wa = ev.target.closest ? ev.target.closest('a[data-wa-manager]') : null;
       if (wa) { ev.preventDefault(); const w = win.open ? win.open(wa.href, '_blank', 'noopener') : null; if (!w) win.location.href = wa.href; return; }
-      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-quick-close],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
+      const t = ev.target.closest ? ev.target.closest('#crm-new-maccabi,[data-maccabi-doc],[data-maccabi-copy],[data-stay-reset],[data-stay-csv],[data-bonus-month],#crm-new-lead,#crm-communication-review,#crm-direct-add,[data-cancel-drawer],[data-remove-lead],[data-restore-lead],[data-quick-close],[data-stage-next],[data-stage-prev],[data-area],[data-kpi],[data-domain],[data-triage-opt],[data-triage-skip],[data-go],[data-day-view],[data-week-step],[data-week-today],[data-done-retry],[data-quick],[data-quick-cancel],[data-quick-pick],[data-view],[data-sort],[data-open-lead],[data-open-patient],[data-house-open],[data-tab],[data-kpi-period],[data-month-step],[data-month-pick],#crm-drawer-close,#crm-burger,#crm-scrim,#crm-retry') : null;
       if (!t) return;
       if (t.dataset.kpiPeriod) { state.kpiPeriod = t.dataset.kpiPeriod; return renderMain(); }
       if (t.dataset.monthStep) {
@@ -6962,9 +7193,11 @@
         doc.querySelectorAll('#crm-drawer [role="tab"]').forEach(function (b) { b.setAttribute('aria-selected', String(b === t)); });
         doc.querySelectorAll('#crm-drawer [data-pane]').forEach(function (p) { p.hidden = p.dataset.pane !== t.dataset.tab; });
         if (state.drawer) state.drawer.tab = t.dataset.tab;
+        if (t.dataset.tab === 'tasks') refreshCommunicationTasks(state.drawer);
         if (t.dataset.tab === 'meetings') markReportSeen();
         return;
       }
+      if (t.id === 'crm-communication-review') return openCommunicationReview();
       if (t.id === 'crm-new-lead') return openNewLeadDrawer();
       if (t.id === 'crm-new-maccabi') {
         openNewLeadDrawer();
@@ -6974,7 +7207,7 @@
       }
       if (t.dataset.maccabiDoc) return maccabiToggle(t.dataset.lead, t.dataset.maccabiDoc);
       if (t.dataset.maccabiCopy !== undefined) {
-        const done = function (ok) { toast(ok ? 'ההודעה הועתקה — הדביקי בוואטסאפ' : 'ההעתקה נחסמה — סמני את הטקסט והעתיקי ידנית', !ok); if (!ok) { const d = $('#crm-maccabi-msg'); if (d) d.open = true; } };
+        const done = function (ok) { toast(ok ? 'רשימת המסמכים הכללית הועתקה' : 'ההעתקה נחסמה — סמני את הטקסט והעתיקי ידנית', !ok); if (!ok) { const d = $('#crm-maccabi-msg'); if (d) d.open = true; } };
         try { win.navigator.clipboard.writeText(MACCABI_MESSAGE).then(function () { done(true); }, function () { done(false); }); } catch (_) { done(false); }
         return;
       }
@@ -7062,7 +7295,11 @@
         const patch = { visitDate: v('visitDate'), visitTime: v('visitTime'), meetingWith: v('meetingWith') };
         const cur = compute(state.data, state.today).leads.filter(function (x) { return x.id === id; })[0];
         if (cur && cur.stage === 'new' && patch.visitDate) patch.stage = 'visit';   // a dated meeting moves a new lead to ביקור נקבע
-        writeLead(id, patch, 'הפגישה');
+        const changed = cur && (cur.stage === 'new' || cur.visitDate !== patch.visitDate ||
+          cur.visitTime !== patch.visitTime || cur.meetingWith !== patch.meetingWith);
+        writeLead(id, patch, 'הפגישה').then(function (ok) {
+          if (ok && changed) openSavedFamilyVisit(id);
+        });
       } else if (f.dataset.form === 'outcome') {
         writeLead(id, { meetingOutcome: v('meetingOutcome') }, 'תוצאת הפגישה');
       } else if (f.dataset.form === 'wait-reason') {
@@ -7090,6 +7327,7 @@
           // A popup opened after two awaits is blocked by browsers, so the prefilled link is a
           // button at the top of the card (one tap) — never an automatic navigation away.
           return postLeadFlag(plan.flag, 'השינוי ע״י המטופל/ת', true).then(function (flagged) {
+            if (flagged && plan.flag.change === 'rescheduled') openSavedFamilyVisit(id);
             const a = flagged ? $('#crm-drawer [data-wa-manager]') : null;
             if (a) { a.focus(); toast('נשמר — לחצי «הודעה למנהל/ת בוואטסאפ» כדי לעדכן את ' + (plan.flag.withWhom || 'המנהל/ת')); }
           });
@@ -7148,6 +7386,13 @@
       } else if (f.dataset.form === 'task-resched') {
         const vals = contactValues(f); const tk = taskById(f.dataset.task);
         postTask(f, rescheduleBody(f.dataset.task, vals), rescheduleErrors(vals, tk), f.dataset.task, 'המועד עודכן');
+      } else if (f.dataset.form === 'catalog-report') {
+        const report = { edition: v('edition'), recipient: v('recipient'), confirmed: f.elements.confirmed.checked };
+        const errors = {};
+        if (!report.edition) errors.edition = 'יש לציין איזו גרסה נשלחה';
+        if (!report.recipient) errors.recipient = 'יש לציין למי נשלח הקטלוג';
+        if (!report.confirmed) errors.confirmed = 'יש לאשר שהשליחה בוצעה';
+        postTask(f, { action: 'completeTask', id: f.dataset.task, catalogReport: report }, errors, f.dataset.task, 'דיווח השליחה נשמר');
       } else if (f.dataset.form === 'task-done') {
         postTask(f, { action: 'completeTask', id: f.dataset.task, outcome: v('outcome') }, {}, f.dataset.task, 'המשימה הושלמה');
       } else if (f.dataset.form === 'task-reassign') {
@@ -7287,8 +7532,16 @@
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-contact-open],[data-contact-cancel],[data-task-resched],[data-task-done],[data-task-more],[data-task-cancel-form],[data-tasks-retry]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-contact-open],[data-contact-cancel],[data-task-resched],[data-task-done],[data-task-more],[data-task-cancel-form],[data-tasks-retry],[data-catalog-copy]') : null;
       if (!t) return;
+      if (t.dataset.catalogCopy !== undefined) {
+        const field = t.form.elements.message;
+        const manual = function () { field.focus(); field.select(); toast('הנוסח מסומן להעתקה ידנית'); };
+        if (win.navigator.clipboard && win.navigator.clipboard.writeText) {
+          win.navigator.clipboard.writeText(field.value).then(function () { toast('הנוסח הועתק'); }, manual);
+        } else manual();
+        return;
+      }
       if (t.dataset.tasksRetry !== undefined) { reloadTasks(); return; }
       if (t.dataset.contactOpen) { const p = t.dataset.contactOpen.split(':'); return openContactPanel(p[0], p.slice(1).join(':'), t.dataset.taskId || ''); }
       if (t.dataset.contactCancel !== undefined) { const b = state.contact; state.contact = null; if (b) { state.drawer = state.drawer || { kind: b.kind, id: b.id, tab: 'overview' }; openDrawer(b.kind, b.id, true); } else closeDrawer(); return; }
@@ -7552,6 +7805,8 @@
         const me = res[0], data = res[1];
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
+        if (win.IntakeDesk) win.IntakeDesk.mount({ me: me, openLead: function (id) { openDrawer('lead', id); },
+          houseName: houseName, newId: newSubmissionId, when: whenLocal });
         $('#crm-user').textContent = me.user || '';
         if ($('#crm-who')) $('#crm-who').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';
