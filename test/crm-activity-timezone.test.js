@@ -24,7 +24,10 @@ test('an ISO-like unzoned wall-clock timestamp is not interpreted in the browser
 
 test('both Activity renderers use the same pure format as Today, not UTC slices', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'public/crm/crm.js'), 'utf8');
-  assert.equal((src.match(/whenLocal\(e\.occurredAt\)/g) || []).length, 2);
+  // one shared line renderer since CHANGELOG-crm-contact-three-states.md: both timelines call it
+  assert.equal((src.match(/whenLocal\(e\.occurredAt\)/g) || []).length, 1);
+  assert.match(src, /function timelineItem\(e, voided, withSource\) \{[\s\S]{0,400}whenLocal\(e\.occurredAt\)/);
+  assert.equal((src.match(/timelineItem\(e, voided, (true|false)\)/g) || []).length, 2);
   assert.doesNotMatch(src, /fmtDate\(String\(e\.occurredAt \|\| ''\)\.slice/);
   assert.match(src, /function whenLocal\(/);
 });

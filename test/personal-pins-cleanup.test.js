@@ -145,6 +145,7 @@ const DELETE_BODIES = {
   voidPayment: { action: 'savePayment', payment: { id: 'pay1', status: 'void', linkStatus: 'duplicate', linkNote: 'כפילות' } },
   cancelCredit: { action: 'saveCredit', credit: { id: 'c1', status: 'cancelled' } },
   deleteDuplicateDischarge: { action: 'deleteDuplicateDischarge', id: 'd2', reason: 'כפילות' },
+  voidContact: { action: 'voidContact', eventId: 'contact:sub-' + '0'.repeat(32), reason: 'הוזן פעמיים' },   // CHANGELOG-crm-contact-three-states.md
 };
 
 /* ================== 1. the shared code is gone (server) ================== */

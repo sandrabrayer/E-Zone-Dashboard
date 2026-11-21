@@ -451,7 +451,10 @@
 // leads first in the board columns. (CHANGELOG-crm-leads-view-fixes.md). From v156; monotonic.
 // v157 → v158: an incoming contact («פנו אלינו») in the contact log + the lead card shows its
 // details first (CHANGELOG-crm-incoming-contact.md). crm.js and crm.css changed. From the live v157; monotonic.
-var CACHE_VERSION = 'v158';
+// v158 → v159: the contact log's three kinds (שיחה יוצאת / שיחה נכנסת / תיעוד שיחה), «ביטול תיעוד»,
+// «מה הלאה» on the card and «היום» as the team page (CHANGELOG-crm-contact-three-states.md).
+// crm.js, crm.css and crm.html changed. From the live v158; monotonic.
+var CACHE_VERSION = 'v159';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

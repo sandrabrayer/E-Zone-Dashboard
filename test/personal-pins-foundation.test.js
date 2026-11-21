@@ -843,7 +843,7 @@ test('Code.gs: DELETE_ACTIONS / APPROVER_ACTIONS are defined — and ENFORCED by
   const g = loadGs({});
   assert.deepStrictEqual(Array.from(g.run('DELETE_ACTIONS')),
     ['removeLead', 'deletePatientRow', 'deleteBillingOverride', 'deleteMeetingReport', 'voidPayment', 'cancelCredit',
-      'deleteDuplicateDischarge', 'cancelRefund']);   // + «בטל זיכוי» (CHANGELOG-cancel-refund.md)
+      'deleteDuplicateDischarge', 'cancelRefund', 'voidContact']);   // + «בטל זיכוי» (CHANGELOG-cancel-refund.md), «ביטול תיעוד» (CHANGELOG-crm-contact-three-states.md)
   assert.deepStrictEqual(Array.from(g.run('APPROVER_ACTIONS')),
     ['unvoidPayment', 'approveRefundException', 'approveRefundPayout', 'writeOffOpeningBalance', 'acceptOpeningBalance']);
   const s = g.sandbox;

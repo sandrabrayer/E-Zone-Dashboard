@@ -18,16 +18,16 @@ const AUD = { owner: 'vered', groups: [{ owner: 'vered', count: 1, byKind: { rep
 test('render: with extras Vered\'s mail gains ONE «היום שלי» section — aggregate counts, labels, the CRM link; zero counts are omitted; no extras → the mail is byte-identical to the billing mail; Ortal never gets the section', () => {
   const plain = M.render(AUD, '2026-10-29');
   const withX = M.render(AUD, '2026-10-29', { callsLate: 2, callsToday: 1, otherToday: 0, meetingsToday: 1, undated: 3 });
-  assert.match(withX.body, /היום שלי — שיחות, מעקבים ופגישות/); assert.match(withX.body, /שיחות ומעקבים באיחור: 2/); assert.match(withX.body, /פגישות קבלה היום: 1/); assert.match(withX.body, /ללא תאריך — לקבוע: 3/);
+  assert.match(withX.body, /היום — שיחות, מעקבים ופגישות/); assert.match(withX.body, /שיחות ומעקבים באיחור: 2/); assert.match(withX.body, /פגישות קבלה היום: 1/); assert.match(withX.body, /ללא תאריך — לקבוע: 3/);
   assert.ok(!/משימות אחרות להיום/.test(withX.body), 'a zero line is omitted');
-  assert.match(withX.body, /פתיחת היום שלי: https:\/\/ezone-dashboard\.up\.railway\.app\/\?view=crm/);
+  assert.match(withX.body, /פתיחת «היום»: https:\/\/ezone-dashboard\.up\.railway\.app\/\?view=crm/);
   assert.match(withX.htmlBody, /href="https:\/\/ezone-dashboard\.up\.railway\.app\/\?view=crm"/);
   assert.equal(withX.subject, plain.subject, 'same mail, same subject');
   assert.equal(M.render(AUD, '2026-10-29', null).body, plain.body); assert.equal(M.render(AUD, '2026-10-29', undefined).htmlBody, plain.htmlBody);
   const zero = M.render(AUD, '2026-10-29', { callsLate: 0, callsToday: 0, otherToday: 0, meetingsToday: 0, undated: 0 });
   assert.match(zero.body, /אין שיחות או מעקבים להיום/);
   const ortal = M.render({ owner: 'ortal', groups: [{ owner: 'vered', count: 1, byKind: {}, oldestWorkAge: null, unknownAgeCount: 0, waitingCount: 0 }] }, '2026-10-29', { callsLate: 5 });
-  assert.ok(!/היום שלי/.test(ortal.body));
+  assert.ok(!/היום — שיחות|פתיחת «היום»/.test(ortal.body));
   assert.deepEqual(M.extraOf({ vered: { callsLate: '2', callsToday: -1, undated: 'x' } }, 'vered'), { callsLate: 2, callsToday: 0, otherToday: 0, meetingsToday: 0, undated: 0, total: 2 }, 'defensive normalisation');
   assert.equal(M.extraOf({}, 'vered'), null);
   assert.ok(!/₪|\d{3},\d{3}/.test(withX.body), 'no money');

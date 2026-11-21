@@ -1,5 +1,22 @@
 # E-ZONE Ecosystem Status — updated November 21, 2026
 
+## Dashboard CRM — three call kinds, «ביטול תיעוד», «מה הלאה», «היום» as the team page — November 21, 2026
+
+Sandra's review of the incoming-contact change (same day). (1) «פנו אלינו» is gone: a contact
+record has one of **three kinds — «שיחה יוצאת» / «שיחה נכנסת» / «תיעוד שיחה»** (`direction`
+`out` / `in` / `note` in the `contact_logged` details JSON; a record with no direction reads as
+«תיעוד שיחה»). One «📞 תיעוד שיחה» button; the kind is chosen in the panel (required; a call TASK
+opens as «שיחה יוצאת»). (2) **«ביטול תיעוד»** for a record entered by mistake: new action
+`voidContact` (on `DELETE_ACTIONS` — the `deleter` role: Vered, Sandra) appends a `contact_voided` Activity event (`supersedesEventId` = the record) — the
+record's row is never edited or deleted; its still-open follow-up task is cancelled with it;
+`contactIndex` and the card's list skip a voided record, the timelines keep it marked «בוטל».
+(3) **«מה הלאה»** at the top of every card: each open follow-up as what · when (relative + date
++ weekday) · who; the board card shows its most urgent one; saving a call returns to the overview.
+(4) «היום שלי» → **«היום»** (menu, title, daily mail), and its head says «כל הצוות» instead of
+the signed-in name. **Code.gs changed** (`voidContact_`, `logContact_`, `contactIndex_`,
+`BillingReminderCore.gs` wording) — deployed by the clasp CI on merge. SW cache v159. See
+`CHANGELOG-crm-contact-three-states.md`.
+
 ## Dashboard CRM — incoming contacts («פנו אלינו») + the lead card shows its details first — November 21, 2026
 
 The contact log assumed WE called. It now records who initiated: a **«📥 פנו אלינו»** button next to

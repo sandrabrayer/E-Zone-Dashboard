@@ -41,7 +41,7 @@ test('nextPlan: relative choices show the ACTUAL date; X days 1–365; date ≥ 
 });
 
 test('contactErrors: when (today or earlier), channel, outcome, next required; next validated per choice; lengths', () => {
-  const ok = { when: TODAY, channel: 'phone', outcome: 'no_answer', next: 'd3' };
+  const ok = { direction: 'out', when: TODAY, channel: 'phone', outcome: 'no_answer', next: 'd3' };
   assert.deepEqual(core.contactErrors(ok, TODAY), {});
   assert.ok(core.contactErrors({}, TODAY).when); assert.ok(core.contactErrors({}, TODAY).channel); assert.ok(core.contactErrors({}, TODAY).outcome);
   assert.match(core.contactErrors({}, TODAY).next, /אין ברירת מחדל/);
