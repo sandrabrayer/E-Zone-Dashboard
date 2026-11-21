@@ -77,6 +77,7 @@ const INDEX = { ok: true, count: 1, leads: { L3: { at: '2026-10-20T09:00:00.000Z
 let tasksAnswer = null;
 let indexAnswer = null;
 let saveAnswer = null;
+let activityAnswer = null;   // a test's own getActivity answer (CHANGELOG-crm-incoming-contact.md); null = the fixture
 async function boot(options = {}) {
   const saves = [];
   // One synthetic authoritative Credits ledger shared by all test sessions;
@@ -134,7 +135,7 @@ async function boot(options = {}) {
       if (parsed.action === 'saveCredit') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'deletePatientRow', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
-      const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
+      const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? (activityAnswer ? activityAnswer(parsed) : ACTIVITY)
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
@@ -169,7 +170,7 @@ async function boot(options = {}) {
     return req;
   };
   const srv = await new Promise((resolve) => { const s = mod.app.listen(0, '127.0.0.1', () => resolve(s)); });
-  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; tasksAnswer = null; indexAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
+  return { port: srv.address().port, actions, saves, close() { saveAnswer = null; tasksAnswer = null; indexAnswer = null; activityAnswer = null; srv.close(); https.request = original; Object.assign(console, quiet); } };
 }
 
 /* Open one section of «גבייה» from its secondary menu (CHANGELOG-billing-sections.md). */
@@ -2976,4 +2977,75 @@ test('«זימון למנהל/ת» when a meeting is scheduled (CHANGELOG-crm-me
     assert.match(await page.getAttribute('#crm-drawer [data-manager-invite="L1"] a', 'href'), /wa\.me\/0549998888/);
     assert.deepEqual(errors, []);
   } finally { DATA.managerPhones = keepPhones; saveAnswer = null; await browser.close(); srv.close(); }
+});
+
+test('«פנו אלינו» + the lead card layout (Vered, CHANGELOG-crm-incoming-contact.md): details come before the actions, a chosen manager is not «נפגש/ת עם»; the documented contacts show on the overview with their direction; an incoming contact is saved through ONE logContact with direction "in"; «לא נדרש המשך» needs no explanation and returns to the overview; the two header buttons fit a phone', { skip: skip && 'playwright/chromium missing' }, async () => {
+  const srv = await boot();
+  const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  try {
+    activityAnswer = () => ({ ok: true, scope: 'full', total: 3, events: [
+      { eventId: 'c2', occurredAt: daysAgo(1) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'ורד', summary: 'פנייה נכנסת · התקיימה שיחה ונדרש המשך · <b>שאל</b> על עלויות', details: { direction: 'in', outcome: 'spoke_follow_up', summary: '<b>שאל</b> על עלויות' } },
+      { eventId: 'c1', occurredAt: daysAgo(4) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'דנה', summary: 'לא היה מענה', details: { outcome: 'no_answer' } },
+      { eventId: 'x', occurredAt: daysAgo(5) + 'T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] });
+    const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    await page.click('#crm-nav button[data-area="leads"]');
+    // a lead whose manager was chosen and whose meeting has a date but NO outcome: never «נפגש/ת עם»
+    await page.click('.card[data-open-lead="L5"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-pane="overview"] .kv');
+    const kv5 = await page.textContent('#crm-drawer [data-pane="overview"] .kv');
+    assert.match(kv5, /פרטי קשר|סטטוס/); assert.match(kv5, /פגישה מיועדת עם\s*רנטה/); assert.doesNotMatch(kv5, /נפגש\/ת עם/);
+    await page.click('#crm-drawer-close');
+    // a new lead with no meeting at all
+    await page.click('.card[data-open-lead="L6"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-pane="overview"] .kv');
+    const kv = await page.textContent('#crm-drawer [data-pane="overview"] .kv');
+    assert.match(kv, /פרטי קשר[\s\S]*0506666666[\s\S]*סטטוס[\s\S]*קיסריה עפרוני[\s\S]*פגישה\s*לא נקבעה/);
+    assert.equal(await page.evaluate(() => { const o = document.querySelector('#crm-drawer [data-pane="overview"]'); return !!(o.querySelector('.kv').compareDocumentPosition(o.querySelector('.actions')) & Node.DOCUMENT_POSITION_FOLLOWING); }), true, 'the details come before the actions');
+    // the documented contacts, on the overview, newest first, with their direction; stored text is text
+    await page.waitForFunction(() => /פנו אלינו/.test(document.querySelector('#crm-recent').textContent), null, { timeout: 5000 });
+    const recent = await page.textContent('#crm-recent');
+    assert.match(recent, /פנו אלינו[\s\S]*<b>שאל<\/b> על עלויות[\s\S]*שיחה יוצאת[\s\S]*לא היה מענה/);
+    assert.doesNotMatch(recent, /הליד נוצר/, 'only contacts, not every event');
+    assert.equal(await page.locator('#crm-recent b').count(), 0, 'no markup from a stored summary');
+    // the meetings pane only displays — it now leads to the scheduling form
+    await page.click('#crm-drawer [data-tab="meetings"]');
+    await page.click('#crm-meetings [data-meeting-go]');
+    assert.equal(await page.getAttribute('#crm-drawer [data-tab="overview"]', 'aria-selected'), 'true');
+    assert.equal(await page.evaluate(() => document.querySelector('#crm-drawer form[data-form="meeting"]').closest('details').open), true);
+    // «פנו אלינו»: the same panel, as an incoming contact
+    await page.click('#crm-drawer .drawer-head [data-contact-open][data-contact-dir="in"]');
+    await page.waitForSelector('#crm-drawer form[data-form="contact"]');
+    assert.match(await page.textContent('#crm-drawer .drawer-head h2'), /תיעוד פנייה נכנסת · מאיה שגב/);
+    assert.equal(await page.inputValue('form[data-form="contact"] input[name="direction"]:checked'), 'in');
+    const optionIds = () => page.$$eval('form[data-form="contact"] select[name="outcome"] option', (els) => els.map((o) => o.value).filter(Boolean));
+    assert.ok(!(await optionIds()).includes('no_answer'), '«לא היה מענה» is not an incoming outcome');
+    assert.match(await page.textContent('form[data-form="contact"]'), /מי פנה/);
+    // switching the direction keeps what was typed and swaps the wording + the outcome list
+    await page.fill('form[data-form="contact"] textarea[name="summary"]', 'התקשר לשאול על ביקור');
+    await page.check('form[data-form="contact"] input[name="direction"][value="out"]');
+    assert.match(await page.textContent('#crm-drawer .drawer-head h2'), /תיעוד שיחה · מאיה שגב/);
+    assert.ok((await optionIds()).includes('no_answer'));
+    await page.check('form[data-form="contact"] input[name="direction"][value="in"]');
+    assert.equal(await page.inputValue('form[data-form="contact"] textarea[name="summary"]'), 'התקשר לשאול על ביקור');
+    assert.equal(await page.$$eval('form[data-form="contact"] input[name="next"]:checked', (els) => els.length), 0, 'still no default follow-up');
+    // «לא נדרש המשך» answers «קשר הבא» by itself — no typed explanation
+    await page.selectOption('form[data-form="contact"] select[name="outcome"]', 'spoke_no_follow_up');
+    assert.equal(await page.inputValue('form[data-form="contact"] input[name="next"]:checked'), 'none');
+    assert.match(await page.textContent('#crm-next-preview'), /ללא משימת המשך — לא נדרש המשך/);
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="contact"]') && document.querySelector('#crm-drawer [data-tab="overview"]') && document.querySelector('#crm-drawer [data-tab="overview"]').getAttribute('aria-selected') === 'true', null, { timeout: 5000 });
+    const posted = srv.saves.filter((x) => x.action === 'logContact');
+    assert.equal(posted.length, 1, 'ONE logContact');
+    assert.equal(posted[0].contact.leadId, 'L6'); assert.equal(posted[0].contact.direction, 'in'); assert.equal(posted[0].contact.outcome, 'spoke_no_follow_up');
+    assert.equal(posted[0].contact.summary, 'התקשר לשאול על ביקור'); assert.deepEqual(posted[0].next, { none: true, explanation: 'לא נדרש המשך' });
+    assert.deepEqual(errors, []);
+    // a phone: both header buttons, no horizontal scroll
+    const m = await open(browser, srv.port, 'vered', 390);
+    await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]');
+    await m.page.click('.card[data-open-lead="L6"]');
+    await m.page.waitForSelector('#crm-drawer[aria-hidden="false"] .drawer-head [data-contact-dir="in"]');
+    assert.equal(await m.page.locator('#crm-drawer .drawer-head [data-contact-open]').count(), 2);
+    assert.equal(await noHScroll(m.page), true);
+    assert.deepEqual(m.errors, []);
+  } finally { activityAnswer = null; saveAnswer = null; await browser.close(); srv.close(); }
 });

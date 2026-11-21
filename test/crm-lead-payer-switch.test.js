@@ -122,7 +122,9 @@ test('the card: «מסלול» in the edit form, the track in the details, the s
   assert.match(save, /הליד יצא מרשימת «מכבי» — השינוי/);
   assert.match(save, /writeLead\(id, plan\.patch, label\)/);
   assert.ok(!/fetch\(/.test(save));
-  assert.match(SRC, /\['מסלול', isMaccabiLead\(lead\) \? 'מכבי · מסמכים ' \+/);
+  // the track row moved into the grouped details (CHANGELOG-crm-incoming-contact.md): same text, «סטטוס» group
+  assert.match(SRC, /const docs = isMaccabiLead\(l\) \? 'מכבי · מסמכים ' \+/);
+  assert.match(SRC, /\['מסלול', docs\]/);
   // the list's own rule is untouched (CHANGELOG-maccabi-leads.md)
   assert.match(SRC, /return \/מכבי\/\.test\(s\(o\.source\)\) \|\| \/מכבי\/\.test\(s\(o\.name\)\) \|\| !!maccabiLineOf\(o\.note\);/);
   assert.ok(!/מסמכי מכבי/.test(GS), 'Code.gs knows nothing of the line — no column, no action');

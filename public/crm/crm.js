@@ -1295,6 +1295,24 @@
   /* A missing manager report is an exception only GRACE days after the meeting. Pure. */
   function reportOverdue(l, today) { return !!(l && l.visitDate && l.visitDate < today && daysBetween(l.visitDate, today) >= MANAGER_REPORT_GRACE_DAYS); }
   function meetingOutcomeLabel(id) { const o = MEETING_OUTCOMES.filter(function (x) { return x.id === s(id); })[0]; return o ? o.label : s(id); }
+  /* The label of a lead's `meetingWith` (CHANGELOG-crm-incoming-contact.md). The field is chosen when
+   * the lead is created, so on its own it never means a meeting took place: «נפגש/ת עם» only once
+   * Vered recorded an outcome of a meeting that was HELD; otherwise the neutral «פגישה מיועדת עם». */
+  const MEETING_HELD_OUTCOMES = ['entered', 'thinking'];
+  function meetingWithLabel(l) { return MEETING_HELD_OUTCOMES.indexOf(s(l && l.meetingOutcome)) >= 0 ? 'נפגש/ת עם' : 'פגישה מיועדת עם'; }
+  /* The lead card's details, grouped: [{ title, rows: [[label, value]] }] — empty values and empty
+   * groups dropped. A lead with no visit date and no outcome says so («לא נקבעה»). Pure. */
+  function leadOverviewGroups(l) {
+    l = l || {};
+    const visit = s(l.visitDate) ? fmtDate(l.visitDate) + (s(l.visitTime) ? ' ' + s(l.visitTime) : '') : (s(l.meetingOutcome) ? '' : 'לא נקבעה');
+    const docs = isMaccabiLead(l) ? 'מכבי · מסמכים ' + MACCABI_DOCS.filter(function (d) { return maccabiDocsOf(l.note)[d.id] === 'in'; }).length + '/' + MACCABI_DOCS.length : '';
+    return [
+      { title: 'פרטי קשר', rows: [['טלפון', l.phone], ['איש קשר', s(l.contactName) + (s(l.contactRelation) ? ' (' + s(l.contactRelation) + ')' : '')], ['טלפון איש קשר', l.contactPhone]] },
+      { title: 'סטטוס', rows: [['שלב', stageLabel(l.stage)], ['בית', houseName(l.house)], ['אחראי', l.assignedTo], ['מקור', l.source], ['מסלול', docs], ['נוצר', fmtDate(l.created)]] },
+      { title: 'פגישה', rows: [['פגישה', visit], [meetingWithLabel(l), l.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(l.meetingOutcome)]] },
+      { title: 'הערות', rows: [['הערות', l.note]] },
+    ].map(function (g) { return { title: g.title, rows: g.rows.filter(function (r) { return s(r[1]); }) }; }).filter(function (g) { return g.rows.length; });
+  }
   /* The Hebrew WhatsApp text to the manager about a patient-side change. Pure. */
   function managerChangeMessage(l, ch) {
     const when = function (d, t) { return fmtDate(d) + (s(t) ? ' בשעה ' + s(t) : ''); };
@@ -2935,11 +2953,47 @@
    * logContact). Pure: a task row as the server returns it; `today` is the
    * Asia/Jerusalem day. */
   const CONTACT_OUTCOMES = [
-    { id: 'spoke_follow_up', label: 'התקיימה שיחה ונדרש המשך' }, { id: 'no_answer', label: 'לא היה מענה' },
+    { id: 'spoke_follow_up', label: 'התקיימה שיחה ונדרש המשך' }, { id: 'spoke_no_follow_up', label: 'התקיימה שיחה — לא נדרש המשך' }, { id: 'no_answer', label: 'לא היה מענה' },
     { id: 'call_back_later', label: 'התבקשנו לחזור במועד' }, { id: 'awaiting_decision', label: 'ממתינים להחלטה או למידע' },
     { id: 'meeting_set', label: 'נקבעה פגישה' }, { id: 'no_interest_now', label: 'אין עניין כרגע' },
     { id: 'bad_contact_details', label: 'פרטי הקשר אינם תקינים' }, { id: 'stop_contact', label: 'התבקשה הפסקת פניות' }];
   const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
+  /* Who initiated the contact (CHANGELOG-crm-incoming-contact.md). 'out' = we called; 'in' = the
+   * lead / patient / family contacted US. Mirrors Code.gs CONTACT_DIRECTIONS; a record with no
+   * direction (written before the field) is 'out'. */
+  const CONTACT_DIRECTIONS = [{ id: 'out', label: 'שיחה יוצאת — אנחנו יזמנו' }, { id: 'in', label: 'פנייה נכנסת — פנו אלינו' }];
+  const TAB_GO_ALLOWED = ['overview', 'tasks', 'activity', 'meetings'];   // the card tabs an in-card link may open
+  const CONTACT_DIR_TEXT = {
+    title: { out: 'תיעוד שיחה', in: 'תיעוד פנייה נכנסת' }, heading: { out: 'השיחה', in: 'הפנייה' },
+    who: { out: 'מי ביצע', in: 'מי קיבל/ה את הפנייה' }, withWhom: { out: 'עם מי', in: 'מי פנה' }, save: { out: 'שמירת השיחה', in: 'שמירת הפנייה' },
+  };
+  /* Outcomes that only describe OUR attempt — not offered for an incoming contact. */
+  const OUTGOING_ONLY_OUTCOMES = ['no_answer', 'bad_contact_details'];
+  /* 'spoke_no_follow_up' IS the answer to «what next»: «ללא משימת המשך» needs no typed explanation (Code.gs CONTACT_NO_FOLLOW_UP_TEXT). */
+  const NO_FOLLOW_UP_OUTCOME = 'spoke_no_follow_up';
+  const NO_FOLLOW_UP_TEXT = 'לא נדרש המשך';
+  function contactDirection(v) { return s(v && v.direction) === 'in' ? 'in' : 'out'; }
+  function contactOutcomesFor(direction) {
+    return direction === 'in' ? CONTACT_OUTCOMES.filter(function (o) { return OUTGOING_ONLY_OUTCOMES.indexOf(o.id) < 0; }) : CONTACT_OUTCOMES.slice();
+  }
+  /* The follow-up of the form's values (one rule for the preview, the check and the body). */
+  function contactNextPlan(v, today) {
+    v = v || {};
+    const ex = s(v.nextExplanation) || (v.next === 'none' && v.outcome === NO_FOLLOW_UP_OUTCOME ? NO_FOLLOW_UP_TEXT : '');
+    return nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: ex }, today);
+  }
+  /* The last documented contacts of a card, from the getActivity events it already loads
+   * (newest first): → { total, items: [{ at, actorName, direction, outcome, text }] }. */
+  function recentContacts(events, limit) {
+    const all = (Array.isArray(events) ? events : []).filter(function (e) { return e && s(e.kind) === 'contact_logged'; })
+      .sort(function (a, b) { return s(a.occurredAt) < s(b.occurredAt) ? 1 : (s(a.occurredAt) > s(b.occurredAt) ? -1 : 0); });
+    const n = Number(limit) > 0 ? Math.floor(Number(limit)) : 3;
+    return { total: all.length, items: all.slice(0, n).map(function (e) {
+      const d = e.details && typeof e.details === 'object' ? e.details : {};
+      const text = s(d.outcome) ? contactOutcomeLabel(d.outcome) + (s(d.summary) ? ' · ' + s(d.summary) : '') : s(e.summary);
+      return { at: s(e.occurredAt), actorName: s(e.actorName), direction: contactDirection(d), outcome: s(d.outcome), text: text };
+    }) };
+  }
   /* «קשר הבא»: no automatic default — the user picks (spec §8). */
   const NEXT_CHOICES = [{ id: 'd1', label: 'מחר', days: 1 }, { id: 'd3', label: 'בעוד 3 ימים', days: 3 }, { id: 'd7', label: 'בעוד שבוע', days: 7 }, { id: 'd14', label: 'בעוד שבועיים', days: 14 },
     { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'none', label: 'ללא משימת המשך' }];
@@ -2961,28 +3015,29 @@
     const ex = s(v.explanation);
     return ex.length >= 2 ? { none: true, explanation: ex, text: 'ללא משימת המשך — ' + ex } : null;
   }
-  /* The contact form → errors by field. v = { when, time, withWhom, channel, reason, outcome, summary, next, nextDays, nextDate, nextTime, nextWeek, nextExplanation }. */
+  /* The contact form → errors by field. v = { direction, when, time, withWhom, channel, reason, outcome, summary, next, nextDays, nextDate, nextTime, nextWeek, nextExplanation }. */
   function contactErrors(v, today) {
     const e = {};
     v = v || {};
     if (!isoDateOk(v.when) || v.when > today) e.when = 'תאריך השיחה — היום או קודם';
     if (s(v.time) && !timeOk(v.time)) e.time = 'שעה בפורמט HH:MM';
     if (!CONTACT_CHANNELS.some(function (c) { return c.id === v.channel; })) e.channel = 'בחרי ערוץ';
-    if (!CONTACT_OUTCOMES.some(function (o) { return o.id === v.outcome; })) e.outcome = 'בחרי תוצאה';
+    if (s(v.direction) && !CONTACT_DIRECTIONS.some(function (d) { return d.id === v.direction; })) e.direction = 'בחרי מי יזם את הקשר';
+    if (!contactOutcomesFor(contactDirection(v)).some(function (o) { return o.id === v.outcome; })) e.outcome = 'בחרי תוצאה';
     if (s(v.summary).length > 1000) e.summary = 'עד 1000 תווים';
     if (s(v.withWhom).length > 80) e.withWhom = 'עד 80 תווים';
     if (!v.next) e.next = 'בחרי מה הלאה — אין ברירת מחדל';
-    else if (!nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today)) {
+    else if (!contactNextPlan(v, today)) {
       e.next = v.next === 'none' ? 'ללא משימת המשך — חובה להסביר (2 תווים לפחות)' : v.next === 'days' ? 'מספר ימים בין 1 ל-365' : v.next === 'week' ? 'בחרי שבוע (מהיום והלאה)' : 'תאריך מהיום והלאה';
     }
     return e;
   }
   /* The logContact body (Stage 1a contract). subject = { leadId } | { patientId }. */
   function contactBody(subject, v, sid, taskId, today, assignee) {
-    const plan = nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today);
+    const plan = contactNextPlan(v, today);
     // local wall-clock → the UTC instant the Activity sheet stores (no time → noon, so the day never shifts)
     const at = new Date(s(v.when) + 'T' + (timeOk(v.time) ? s(v.time) : '12:00') + ':00');
-    const contact = Object.assign({}, subject, { occurredAt: isNaN(at.getTime()) ? '' : at.toISOString(), withWhom: s(v.withWhom), channel: s(v.channel), reason: s(v.reason), outcome: s(v.outcome), summary: s(v.summary) });
+    const contact = Object.assign({}, subject, { direction: contactDirection(v), occurredAt: isNaN(at.getTime()) ? '' : at.toISOString(), withWhom: s(v.withWhom), channel: s(v.channel), reason: s(v.reason), outcome: s(v.outcome), summary: s(v.summary) });
     if (taskId) contact.taskId = taskId;
     const next = plan.none ? { none: true, explanation: plan.explanation } : plan.windowStart ? { windowStart: plan.windowStart, windowEnd: plan.windowEnd } : { dueDate: plan.dueDate, dueTime: plan.dueTime || '' };
     if (!next.none) { next.title = s(v.nextTitle) || ('לחזור — ' + contactOutcomeLabel(v.outcome)); if (s(assignee)) next.assignee = s(assignee); if (s(v.summary)) next.reason = s(v.summary).slice(0, 300); }
@@ -6122,17 +6177,23 @@
       const dr = $('#crm-drawer');
       const name = lead ? lead.name : pat.name;
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
-      const kv = lead ? [['טלפון', lead.phone], ['בית', houseName(lead.house)], ['מקור', lead.source], ['מסלול', isMaccabiLead(lead) ? 'מכבי · מסמכים ' + MACCABI_DOCS.filter(function (d) { return maccabiDocsOf(lead.note)[d.id] === 'in'; }).length + '/' + MACCABI_DOCS.length : ''], ['אחראי', lead.assignedTo], ['שלב', stageLabel(lead.stage)], ['פגישה', fmtDate(lead.visitDate) + (lead.visitTime ? ' ' + lead.visitTime : '')], ['נוצר', fmtDate(lead.created)], ['נפגש/ת עם', lead.meetingWith], ['תוצאת פגישה', meetingOutcomeLabel(lead.meetingOutcome)], ['איש קשר', lead.contactName + (lead.contactRelation ? ' (' + lead.contactRelation + ')' : '')], ['טלפון איש קשר', lead.contactPhone], ['הערות', lead.note]]
+      const kv = lead ? []
         : [['בית', houseName(pat.houseId)], ['תאריך כניסה', fmtDate(pat.date) + (pat.date && !s(pat.exitDate) ? ' · ' + daysBetween(pat.date, state.today) + ' ימים בבית' : '')], ['תאריך יציאה', s(pat.exitDate) ? fmtDate(pat.exitDate) + (pat.date ? ' · ' + daysBetween(pat.date, pat.exitDate) + ' ימים בבית' : '') : ''], ['סטטוס', patientStatusLabel(pat.status)], ['הגיע/ה', pat.source === 'lead' ? 'מליד' : pat.source === 'direct_admin' ? 'הוספה ישירה' : pat.source], ['ליד מקורי', pat.fromLead ? ((compute(state.data, state.today).leads.filter(function (l) { return l.id === pat.fromLead; })[0] || {}).name || 'נסגרה / הועברה') : '']];
       const na = lead ? nextActionFor(lead, state.today, flagsOf(state.index, lead.id)) : null;
       dr.innerHTML = '<div class="drawer-head"><div><h2>' + esc(name) + '</h2><div class="meta tags">' + (lead ? '<span class="chip stage-' + esc(lead.stage) + '">' + esc(stageLabel(lead.stage)) + '</span>' + houseTag(lead.house) + (lead.assignedTo ? avatar(lead.assignedTo) : '') : statusChip(pat.status) + houseTag(pat.houseId)) + (na ? chip(na.state, na.text) : '') + (lead && waitChipText(lead, flagsOf(state.index, lead.id)) && waitChipText(lead, flagsOf(state.index, lead.id)) !== na.text ? chip('wait', waitChipText(lead, flagsOf(state.index, lead.id))) : '') + '</div></div>'
-        + '<span class="toolbar">' + (state.me && state.me.view === 'controller' ? '' : '<button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button>') + '<button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
+        + '<span class="toolbar">' + (state.me && state.me.view === 'controller' ? '' : '<button type="button" class="btn small primary" data-contact-open="' + esc(kind + ':' + id) + '">📞 תיעוד שיחה</button><button type="button" class="btn small" data-contact-open="' + esc(kind + ':' + id) + '" data-contact-dir="in">📥 פנו אלינו</button>') + '<button type="button" class="btn small" id="crm-drawer-close" aria-label="סגירה">✕</button></span></div>'
         + '<div class="tabs" role="tablist">' + [['overview', 'סקירה'], ['tasks', 'משימות' + (tasksFor(subject, state.tasks).length ? ' (' + tasksFor(subject, state.tasks).length + ')' : '')], ['activity', 'פעילות'], ['meetings', 'פגישות ושירותים'], ['account', 'חשבון'], ['docs', 'מסמכים']].filter(function (t) { return t[0] !== 'account' || accountTabVisible(state.me); }).map(function (t, i) { return '<button type="button" role="tab" data-tab="' + t[0] + '" aria-selected="' + (i === 0) + '">' + esc(t[1]) + '</button>'; }).join('') + '</div>'
-        + '<section data-pane="overview">' + (lead ? renderLeadActions(lead) : (state.me && state.me.view === 'controller' ? '' : renderPatientActions(pat)))
-        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '<dl class="kv">' + kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('') + '</dl>' + (lead && rawLead(lead.id) && !(state.me && state.me.view === 'controller') ? '<p><button type="button" class="btn" data-lead-edit-open="' + esc(lead.id) + '">עריכת פרטי הליד</button></p>' : '') + '</section>'
+        // Details first, then the documented contacts, then the actions (CHANGELOG-crm-incoming-contact.md).
+        + '<section data-pane="overview"><dl class="kv">' + (lead
+          ? leadOverviewGroups(lead).map(function (g) { return '<dt class="kv-h">' + esc(g.title) + '</dt><dd class="kv-h"></dd>' + g.rows.map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join(''); }).join('')
+          : kv.filter(function (x) { return s(x[1]); }).map(function (x) { return '<dt>' + esc(x[0]) + '</dt><dd>' + esc(x[1]) + '</dd>'; }).join('')) + '</dl>'
+        + (lead && rawLead(lead.id) && !(state.me && state.me.view === 'controller') ? '<p><button type="button" class="btn" data-lead-edit-open="' + esc(lead.id) + '">עריכת פרטי הליד</button></p>' : '')
+        + (state.me && state.me.view === 'controller' ? '' : '<div class="group-title">שיחות ופניות אחרונות</div><div id="crm-recent" class="recent"><p class="na">טוען…</p></div>')
+        + (lead ? renderLeadActions(lead) : (state.me && state.me.view === 'controller' ? '' : renderPatientActions(pat)))
+        + (lead && c.outpatientSent && c.outpatientSent[lead.id] ? outpatientStatusButton(lead.id, 'lead') : '') + '</section>'
         + '<section data-pane="tasks" hidden id="crm-tasks">' + renderTasksPane(subject) + '</section>'
         + '<section data-pane="activity" hidden><ul class="tl" id="crm-tl"><li>טוען…</li></ul></section>'
-        + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today))) + '</section>'
+        + '<section data-pane="meetings" hidden id="crm-meetings">' + renderMeetings(meetingsFor(lead || pat, lead ? 'lead' : 'patient', compute(state.data, state.today)), !!lead && !(state.me && state.me.view === 'controller')) + '</section>'
         + (accountTabVisible(state.me) ? '<section data-pane="account" hidden id="crm-account">' + (pat && accountReadable(state.me) ? '<p class="na">טוען נתוני חשבון…</p>' : '<p class="na">' + (lead ? 'החשבון נפתח עם הקליטה לבית.' : 'אין הרשאה לנתוני גבייה.') + '</p>') + '</section>' : '')
         + '<section data-pane="docs" hidden><p class="na">מסמכים — חשבשבת נשארת המקור; עדיין לא מחובר.</p></section>';
       let prevTab = keepTab && state.drawer && state.drawer.tab ? state.drawer.tab : 'overview';
@@ -6148,10 +6209,23 @@
       api('getActivity', Object.assign({ limit: 50 }, subject)).then(function (r) {
         const tl = $('#crm-tl');
         if (!tl) return;
+        const rc = $('#crm-recent');
+        if (rc && state.drawer && state.drawer.id === id) rc.innerHTML = renderRecentContacts(r);
         if (!r || r.ok === false) { tl.innerHTML = '<li class="na">ציר הפעילות לא זמין (' + esc((r && r.error) || 'שגיאה') + ')</li>'; return; }
         if (!r.events || !r.events.length) { tl.innerHTML = '<li class="na">אין אירועים עדיין</li>'; return; }
         tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + (String(e.source || '').indexOf('manual') === 0 ? ' · ידני' : ' · מערכת') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
+    }
+    /* «שיחות ופניות אחרונות» on the overview: the last documented contacts, both directions, from the same getActivity answer. */
+    function renderRecentContacts(r) {
+      if (!r || r.ok === false) return '<p class="na">היסטוריית הקשר אינה זמינה כרגע.</p>';
+      const rc = recentContacts(r.events, 3);
+      if (!rc.total) return '<p class="na">אין שיחות או פניות מתועדות עדיין.</p>';
+      return '<ul class="tl">' + rc.items.map(function (x) {
+        return '<li><div class="t">' + esc(whenLocal(x.at)) + (x.actorName ? ' · ' + esc(x.actorName) : '') + ' · ' + chip(x.direction === 'in' ? 'today' : 'wait', x.direction === 'in' ? 'פנו אלינו' : 'שיחה יוצאת') + '</div>'
+          + '<div>' + esc(x.text) + '</div></li>';
+      }).join('') + '</ul>'
+        + (rc.total > rc.items.length ? '<p class="na">מוצגות ' + rc.items.length + ' האחרונות מתוך ' + rc.total + ' — <button type="button" class="btn small" data-tab-go="activity">כל הפעילות</button></p>' : '');
     }
     /* C9: the «חשבון» pane — the area's two reads (loaded once, shared), one patient. */
     function fillAccountPane(patientId) {
@@ -6632,11 +6706,13 @@
         .catch(function (e) { state.saving = false; clearBusy(); toast(String(e && e.message || e) || 'המשך הטיפול לא נשמר', true); });
     }
     /* C14: the «פגישות ושירותים» pane. */
-    function renderMeetings(m) {
+    /* canSchedule: a lead's own card — the pane then links to the «תיאום פגישה» form on the overview (this pane only displays). */
+    function renderMeetings(m, canSchedule) {
       let html = '';
       html += '<div class="group-title">פגישת קבלה</div>';
       if (!m.visit) html += '<p class="na">אין פגישה רשומה.</p>';
-      else html += '<dl class="kv"><dt>תאריך</dt><dd>' + esc(fmtDate(m.visit.date) || '—') + (m.visit.time ? ' ' + esc(m.visit.time) : '') + '</dd><dt>נפגש/ת עם</dt><dd>' + esc(m.visit.withWhom || '—') + '</dd><dt>תוצאה (ורד)</dt><dd>' + esc(m.visit.outcome ? meetingOutcomeLabel(m.visit.outcome) : 'ללא תוצאה') + '</dd></dl>';
+      else html += '<dl class="kv"><dt>תאריך</dt><dd>' + esc(fmtDate(m.visit.date) || (m.visit.outcome ? '—' : 'לא נקבעה')) + (m.visit.time ? ' ' + esc(m.visit.time) : '') + '</dd><dt>' + esc(meetingWithLabel({ meetingOutcome: m.visit.outcome })) + '</dt><dd>' + esc(m.visit.withWhom || '—') + '</dd><dt>תוצאה (ורד)</dt><dd>' + esc(m.visit.outcome ? meetingOutcomeLabel(m.visit.outcome) : 'ללא תוצאה') + '</dd></dl>';
+      if (canSchedule) html += '<p><button type="button" class="btn small primary" data-meeting-go>' + (m.visit && s(m.visit.date) ? 'עדכון הפגישה' : 'תיאום פגישה') + '</button></p>';
       if (m.lead) {
         const ch = patientMeetingChange(m.lead, flagsOf(state.index, m.lead.id));
         if (ch) html += '<p class="notice warn patient-change">' + esc(ch.change === 'cancelled' ? 'הפגישה בוטלה ע״י המטופל/ת' : 'מועד הפגישה שונה ע״י המטופל/ת (היה ' + fmtDate(ch.prevDate) + (ch.prevTime ? ' ' + ch.prevTime : '') + ')')
@@ -6802,44 +6878,47 @@
         .catch(function (e) { state.saving = false; clearBusy(); showReportIssues(f, [], 'לא נשמר — נסי שוב'); toast(String(e && e.message || e), true); return false; });
     }
     /* The contact panel (spec §8): the subject, the contact person and phone, the history, the form. Rendered in the drawer; «ביטול» returns to the card. */
-    function openContactPanel(kind, id, taskId) {
+    function openContactPanel(kind, id, taskId, direction) {
       const c = compute(state.data, state.today);
       const lead = kind === 'lead' ? c.leads.filter(function (l) { return l.id === id; })[0] : null;
       const pat = kind === 'patient' ? c.patients.filter(function (p) { return p.id === id; })[0] : null;
       if (!lead && !pat) { toast('לא נמצא/ה ברשימה — רענני את הדף.', true); return; }
       const subject = lead ? { leadId: lead.id } : { patientId: pat.id };
       const task = taskId ? taskById(taskId) : null;
+      const dir = direction === 'in' ? 'in' : 'out';
       state.contact = { kind: kind, id: id, taskId: task ? task.id : '', sid: newSubmissionId() };
       const dr = $('#crm-drawer');
       const phone = lead ? lead.phone : '';
       const err = function (f) { return '<span class="err" data-err="' + f + '"></span>'; };
-      dr.innerHTML = '<div class="drawer-head"><div><h2>תיעוד שיחה · ' + esc(lead ? lead.name : pat.name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (lead && lead.contactName ? ' · איש קשר: ' + esc(lead.contactName) + (lead.contactRelation ? ' (' + esc(lead.contactRelation) + ')' : '') : '') + '</div>'
+      dr.innerHTML = '<div class="drawer-head"><div><h2><span data-dir-text="title">' + esc(CONTACT_DIR_TEXT.title[dir]) + '</span> · ' + esc(lead ? lead.name : pat.name) + '</h2><div class="meta">' + esc(lead ? stageLabel(lead.stage) + ' · ' + houseName(lead.house) : 'מטופל/ת · ' + houseName(pat.houseId)) + (lead && lead.contactName ? ' · איש קשר: ' + esc(lead.contactName) + (lead.contactRelation ? ' (' + esc(lead.contactRelation) + ')' : '') : '') + '</div>'
         + (phone ? '<div class="meta">טלפון: <a href="tel:' + esc(phone) + '">' + esc(phone) + '</a> · <a href="https://wa.me/' + esc(localPhone(phone)) + '" target="_blank" rel="noopener">וואטסאפ</a> <span class="sub">(קישור חיוג אינו תיעוד)</span></div>' : '')
         + (lead && lead.contactPhone ? '<div class="meta">טלפון איש קשר: <a href="tel:' + esc(lead.contactPhone) + '">' + esc(lead.contactPhone) + '</a></div>' : '')
         + '</div><button type="button" class="btn small" data-contact-cancel aria-label="חזרה לכרטיס">✕</button></div>'
         + (task ? '<p class="na">המשימה: <strong>' + esc(task.title) + '</strong> · ' + esc(taskWhen(task)) + (task.reason ? ' · ' + esc(task.reason) : '') + '</p>' : '')
         + '<div class="group-title">היסטוריית קשר</div><ul class="tl" id="crm-tl"><li>טוען…</li></ul>'
         + '<form class="new-lead report contact" data-form="contact" novalidate>'
-        + '<h3>השיחה</h3>'
+        + '<fieldset class="wide direction"><legend>מי יזם את הקשר? *</legend>'
+        + CONTACT_DIRECTIONS.map(function (d) { return '<label class="radio"><input type="radio" name="direction" value="' + d.id + '"' + (d.id === dir ? ' checked' : '') + '> ' + esc(d.label) + '</label>'; }).join('') + err('direction') + '</fieldset>'
+        + '<h3 data-dir-text="heading">' + esc(CONTACT_DIR_TEXT.heading[dir]) + '</h3>'
         + '<label>תאריך *<input type="date" name="when" value="' + esc(state.today) + '" max="' + esc(state.today) + '">' + err('when') + '</label>'
         + '<label>שעה <input type="time" name="time">' + err('time') + '</label>'
-        + '<label>מי ביצע <input type="text" name="who" value="' + esc(state.me && state.me.user) + '" readonly></label>'
-        + '<label>עם מי <input type="text" name="withWhom" maxlength="80" value="' + esc(lead && lead.contactName ? lead.contactName : '') + '">' + err('withWhom') + '</label>'
+        + '<label><span data-dir-text="who">' + esc(CONTACT_DIR_TEXT.who[dir]) + '</span> <input type="text" name="who" value="' + esc(state.me && state.me.user) + '" readonly></label>'
+        + '<label><span data-dir-text="withWhom">' + esc(CONTACT_DIR_TEXT.withWhom[dir]) + '</span> <input type="text" name="withWhom" maxlength="80" value="' + esc(lead && lead.contactName ? lead.contactName : '') + '">' + err('withWhom') + '</label>'
         + '<label>ערוץ *<select name="channel">' + CONTACT_CHANNELS.map(function (ch) { return '<option value="' + ch.id + '"' + (ch.id === 'phone' ? ' selected' : '') + '>' + esc(ch.label) + '</option>'; }).join('') + '</select>' + err('channel') + '</label>'
         + '<label>סיבת הפנייה <input type="text" name="reason" maxlength="200" value="' + esc(task ? task.title : '') + '"></label>'
-        + '<label class="wide">תוצאה *<select name="outcome"><option value="">בחרי…</option>' + CONTACT_OUTCOMES.map(function (o) { return '<option value="' + o.id + '">' + esc(o.label) + '</option>'; }).join('') + '</select>' + err('outcome') + '</label>'
+        + '<label class="wide">תוצאה *<select name="outcome">' + contactOutcomeOptions(dir, '') + '</select>' + err('outcome') + '</label>'
         + '<label class="wide">תקציר <textarea name="summary" rows="3" maxlength="1000"></textarea>' + err('summary') + '</label>'
         + '<fieldset class="wide next"><legend>קשר הבא *</legend>'
         + NEXT_CHOICES.map(function (n) { return '<label class="radio"><input type="radio" name="next" value="' + n.id + '"> ' + esc(n.label) + '</label>'; }).join('')
         + '<div class="next-extra"><label data-next-for="days">מספר ימים <input type="number" name="nextDays" min="1" max="365"></label>'
         + '<label data-next-for="date">תאריך <input type="date" name="nextDate" min="' + esc(state.today) + '"></label><label data-next-for="date">שעה <input type="time" name="nextTime"></label>'
         + '<label data-next-for="week">יום בשבוע המבוקש <input type="date" name="nextWeek" min="' + esc(state.today) + '"></label>'
-        + '<label data-next-for="none" class="wide">למה אין המשך *<input type="text" name="nextExplanation" maxlength="300"></label>'
+        + '<label data-next-for="none" class="wide"><span>למה אין המשך <span data-none-req>*</span></span><input type="text" name="nextExplanation" maxlength="300"></label>'
         + '<label data-next-for="task" class="wide">כותרת המשימה <input type="text" name="nextTitle" maxlength="120" placeholder="לחזור — (ברירת מחדל לפי התוצאה)"></label>'
         + '<label data-next-for="task">אחראי <select name="nextAssignee">' + opts(ASSIGNEES, task && task.assignee ? task.assignee : (state.me && state.me.user), true) + '</select></label></div>'
         + '<p class="na" id="crm-next-preview">בחרי מועד — התאריך בפועל יוצג כאן.</p><span class="err" data-err="next"></span></fieldset>'
         + '<div class="wide err" data-err="_form"></div>'
-        + '<div class="wide toolbar"><button type="submit" class="btn primary">שמירת השיחה</button><button type="button" class="btn" data-contact-cancel>ביטול</button><span class="na" id="crm-report-state"></span></div></form>';
+        + '<div class="wide toolbar"><button type="submit" class="btn primary" data-dir-text="save">' + esc(CONTACT_DIR_TEXT.save[dir]) + '</button><button type="button" class="btn" data-contact-cancel>ביטול</button><span class="na" id="crm-report-state"></span></div></form>';
       dr.setAttribute('aria-hidden', 'false');
       $('#crm-scrim').setAttribute('data-open', 'true');
       api('getActivity', Object.assign({ limit: 30 }, subject)).then(function (r) {
@@ -6850,11 +6929,23 @@
         tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
+    /* The panel's wording per direction, and the outcome list a direction offers. Switching the
+     * direction keeps everything typed; an outcome the new direction does not offer is cleared. */
+    function contactOutcomeOptions(dir, selected) {
+      return '<option value="">בחרי…</option>' + contactOutcomesFor(dir).map(function (o) { return '<option value="' + o.id + '"' + (o.id === selected ? ' selected' : '') + '>' + esc(o.label) + '</option>'; }).join('');
+    }
+    function applyContactDirection(f) {
+      const dir = contactDirection(contactValues(f));
+      doc.querySelectorAll('#crm-drawer [data-dir-text]').forEach(function (el) { const t = CONTACT_DIR_TEXT[el.dataset.dirText]; if (t) el.textContent = t[dir]; });
+      const sel = f.elements.outcome;
+      if (sel) sel.innerHTML = contactOutcomeOptions(dir, sel.value);
+    }
     function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.value; }); return v; }
     function refreshNextPreview(f) {
       const v = contactValues(f);
-      const plan = v.next ? nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, state.today) : null;
+      const plan = v.next ? contactNextPlan(v, state.today) : null;
       doc.querySelectorAll('#crm-drawer [data-next-for]').forEach(function (el) { const k = el.dataset.nextFor; el.hidden = !(k === v.next || (k === 'task' && v.next && v.next !== 'none')); });
+      const req = $('#crm-drawer [data-none-req]'); if (req) req.hidden = v.outcome === NO_FOLLOW_UP_OUTCOME;   // that outcome needs no typed explanation
       const p = $('#crm-next-preview'); if (p) p.textContent = plan ? plan.text : (v.next ? 'השלימי את הפרטים' : 'בחרי מועד — התאריך בפועל יוצג כאן.');
     }
     /* Save = ONE logContact. A failure keeps the text and allows a retry with the SAME submission id (idempotent server-side); nothing is marked done before the server confirms. */
@@ -6876,9 +6967,10 @@
           const why = contactAccepted(res);
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           const back = state.contact; state.contact = null;
-          toast('השיחה נשמרה ✓' + (res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
+          toast((contactDirection(v) === 'in' ? 'הפנייה נשמרה ✓' : 'השיחה נשמרה ✓') + (res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
           if (state.area === 'triage') { triageDecided(); closeDrawer(); return reloadTasks().then(function () { return true; }); }
-          state.drawer = { kind: back.kind, id: back.id, tab: 'tasks' };
+          // A call that closed a task or created a follow-up returns to «משימות» (as before); otherwise to the overview, where the record shows in «שיחות ופניות אחרונות».
+          state.drawer = { kind: back.kind, id: back.id, tab: back.taskId || res.created ? 'tasks' : 'overview' };
           return reloadTasks().then(function () { openDrawer(back.kind, back.id, true); return true; });
         })
         .catch(function (e) { state.saving = false; clearBusy(); if (st) st.textContent = ''; showReportIssues(f, [], 'השיחה לא נשמרה — הטקסט נשמר, נסי שוב'); toast(String(e && e.message || e), true); return false; });
@@ -7286,11 +7378,21 @@
       if (t.dataset.outPhoneCancel !== undefined) { state.outPhone = ''; return renderMain(); }
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });
+    /* In-card jumps (CHANGELOG-crm-incoming-contact.md): «כל הפעילות» from the overview, «תיאום פגישה» from the meetings pane. */
+    root.addEventListener('click', function (ev) {
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-tab-go],[data-meeting-go]') : null;
+      if (!t) return;
+      ev.preventDefault();
+      const want = t.dataset.tabGo || 'overview';
+      const tab = TAB_GO_ALLOWED.indexOf(want) >= 0 ? doc.querySelector('#crm-drawer [role="tab"][data-tab="' + want + '"]') : null;
+      if (tab) tab.click();
+      if (t.dataset.meetingGo !== undefined) { focusMeetingForm(); const f = $('#crm-drawer form[data-form="meeting"]'); if (f && typeof f.scrollIntoView === 'function') f.scrollIntoView({ block: 'center' }); }
+    });
     root.addEventListener('click', function (ev) {
       const t = ev.target && ev.target.closest ? ev.target.closest('[data-contact-open],[data-contact-cancel],[data-task-resched],[data-task-done],[data-task-more],[data-task-cancel-form],[data-tasks-retry]') : null;
       if (!t) return;
       if (t.dataset.tasksRetry !== undefined) { reloadTasks(); return; }
-      if (t.dataset.contactOpen) { const p = t.dataset.contactOpen.split(':'); return openContactPanel(p[0], p.slice(1).join(':'), t.dataset.taskId || ''); }
+      if (t.dataset.contactOpen) { const p = t.dataset.contactOpen.split(':'); return openContactPanel(p[0], p.slice(1).join(':'), t.dataset.taskId || '', t.dataset.contactDir || ''); }
       if (t.dataset.contactCancel !== undefined) { const b = state.contact; state.contact = null; if (b) { state.drawer = state.drawer || { kind: b.kind, id: b.id, tab: 'overview' }; openDrawer(b.kind, b.id, true); } else closeDrawer(); return; }
       if (t.dataset.taskCancelForm) { const el = t.closest('.task-form'); if (el) el.innerHTML = ''; return; }
       if (t.dataset.taskResched) return openTaskForm(t.dataset.taskResched, 'resched', t);
@@ -7299,6 +7401,9 @@
     });
     root.addEventListener('change', function (ev) {
       const f = ev.target && ev.target.closest ? ev.target.closest('form[data-form="contact"]') : null;
+      if (f && ev.target.name === 'direction') applyContactDirection(f);
+      // «לא נדרש המשך» is itself the answer to «קשר הבא»: choose it for the user (she can still change it).
+      if (f && ev.target.name === 'outcome' && ev.target.value === NO_FOLLOW_UP_OUTCOME && f.elements.next) f.elements.next.value = 'none';
       if (f) refreshNextPreview(f);
       const rf = ev.target && ev.target.closest ? ev.target.closest('form[data-form="payment-report"]') : null;
       if (rf) refreshPwdPreview(rf);
@@ -7618,6 +7723,7 @@
     refundActionFor: refundActionFor, refundStageText: refundStageText, refundActionButton: refundActionButton,
     RECEIPT_EDIT_FIELDS: RECEIPT_EDIT_FIELDS, receiptEditFields: receiptEditFields, receiptEditIssues: receiptEditIssues, receiptEditBody: receiptEditBody, receiptVoidErrors: receiptVoidErrors, receiptVoidBody: receiptVoidBody, receiptVoidAccepted: receiptVoidAccepted,
     addMonthsIso: addMonthsIso, dueOnDate: dueOnDate, filterDueRows: filterDueRows, monthSplit: monthSplit, cycleBalanceLib: cycleBalanceLib, FUNDER_UNSET_LABEL: FUNDER_UNSET_LABEL, stayCycles: stayCycles, reportableCycles: reportableCycles, otherCycleGroups: otherCycleGroups, otherCyclePickerHtml: otherCyclePickerHtml, otherCyclePick: otherCyclePick, reportCycleForWindow: reportCycleForWindow,
+    CONTACT_DIRECTIONS: CONTACT_DIRECTIONS, CONTACT_DIR_TEXT: CONTACT_DIR_TEXT, OUTGOING_ONLY_OUTCOMES: OUTGOING_ONLY_OUTCOMES, NO_FOLLOW_UP_TEXT: NO_FOLLOW_UP_TEXT, contactDirection: contactDirection, contactOutcomesFor: contactOutcomesFor, contactNextPlan: contactNextPlan, recentContacts: recentContacts, meetingWithLabel: meetingWithLabel, leadOverviewGroups: leadOverviewGroups,
     CONTACT_OUTCOMES: CONTACT_OUTCOMES, CONTACT_CHANNELS: CONTACT_CHANNELS, NEXT_CHOICES: NEXT_CHOICES, TASK_KINDS: TASK_KINDS, TASK_KIND_LABELS: TASK_KIND_LABELS, contactOutcomeLabel: contactOutcomeLabel, nextPlan: nextPlan, contactErrors: contactErrors, contactBody: contactBody, contactAccepted: contactAccepted,
     taskDue: taskDue, taskState: taskState, taskWhen: taskWhen, taskSubject: taskSubject, taskQueue: taskQueue, tasksFor: tasksFor, taskCounts: taskCounts, taskFormErrors: taskFormErrors, taskCreateBody: taskCreateBody, rescheduleErrors: rescheduleErrors, rescheduleBody: rescheduleBody, taskAccepted: taskAccepted,
     VERIFY_LABELS: VERIFY_LABELS, verifyStatus: verifyStatus, verificationRows: verificationRows, ortalDay: ortalDay,

@@ -1216,9 +1216,16 @@ const TASK_SUBMISSION_RE = /^sub-[0-9a-f]{32}$/;
 const TASK_ID_RE = /^task-[0-9a-f]{32}(-[a-z0-9]{1,12})?$/;
 const TASK_READ_MAX = 1000;
 /* Contact outcomes (spec §8) — what happened; the next action is separate. */
-const CONTACT_OUTCOMES = ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
+const CONTACT_OUTCOMES = ['spoke_follow_up', 'spoke_no_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
   'no_interest_now', 'bad_contact_details', 'stop_contact'];
 const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
+/* Who initiated the contact (CHANGELOG-crm-incoming-contact.md): 'out' = we called,
+ * 'in' = the lead / patient / family contacted us. Kept in the event's details JSON
+ * (no sheet column); an event written before this field reads as 'out'. */
+const CONTACT_DIRECTIONS = ['out', 'in'];
+const CONTACT_INCOMING_PREFIX = 'פנייה נכנסת';
+/* 'spoke_no_follow_up' IS the answer to «what next»: its explanation may be left empty. */
+const CONTACT_NO_FOLLOW_UP_TEXT = 'לא נדרש המשך';
 const CONTACT_SUMMARY_MAX = 1000;
 const CONTACT_WITH_MAX = 80;
 const CONTACT_REASON_MAX = 200;
@@ -1236,6 +1243,7 @@ const TASK_MESSAGES = {
   bad_assignee: 'אחראי/ת לא תקין/ה',
   bad_outcome: 'תוצאת שיחה לא מוכרת',
   bad_channel: 'ערוץ קשר לא מוכר',
+  bad_direction: 'כיוון הפנייה לא מוכר',
   missing_contact: 'חסר תיעוד שיחה',
   bad_next: 'הפעולה הבאה לא תקינה',
   missing_next_explanation: 'ללא משימת המשך — יש להסביר מי ממשיך את הטיפול',
@@ -4977,7 +4985,7 @@ function cancelTask_(body, actorName, actor) {
  *   3. the follow-up (next): a new task 'task-<sid>-next' from next.dueDate / next.days /
  *      next.window, or none with an explanation (next.none + next.explanation).
  * contact: { leadId?, patientId?, personId?, houseId?, occurredAt?, channel, withWhom, reason?,
- *            outcome (CONTACT_OUTCOMES), summary, taskId? }
+ *            outcome (CONTACT_OUTCOMES), summary, taskId?, direction? ('out' default | 'in' = they contacted us) }
  * next:    { none?:true, explanation?, dueDate?, dueTime?, days?, windowStart?, windowEnd?,
  *            kind? (default call), title?, assignee?, reason? }
  * → { ok, event, completed: task|null, created: task|null, replayed? } */
@@ -4993,12 +5001,15 @@ function logContact_(body, actorName, actor) {
   if (CONTACT_OUTCOMES.indexOf(outcome) < 0) return taskNo_('bad_outcome');
   const channel = String(c.channel == null ? 'phone' : c.channel).trim() || 'phone';
   if (CONTACT_CHANNELS.indexOf(channel) < 0) return taskNo_('bad_channel');
+  const direction = String(c.direction == null ? 'out' : c.direction).trim() || 'out';
+  if (CONTACT_DIRECTIONS.indexOf(direction) < 0) return taskNo_('bad_direction');
   const nowIso = new Date().toISOString();
   const occurredAt = activityIso_(c.occurredAt) || (c.occurredAt && taskIso_(c.occurredAt) ? taskIso_(c.occurredAt) + 'T12:00:00.000Z' : nowIso);
   const n = b.next && typeof b.next === 'object' ? b.next : { none: true, explanation: '' };
   let nextTask = null;
+  const noNextText = n.none === true ? (taskText_(n.explanation, TASK_REASON_MAX) || (outcome === 'spoke_no_follow_up' ? CONTACT_NO_FOLLOW_UP_TEXT : '')) : '';
   if (n.none === true) {
-    if (taskText_(n.explanation, TASK_REASON_MAX).length < 2) return taskNo_('missing_next_explanation');
+    if (noNextText.length < 2) return taskNo_('missing_next_explanation');
   } else {
     let dueDate = n.dueDate ? taskIso_(n.dueDate) : '';
     if (n.dueDate && !dueDate) return taskNo_('bad_due');
@@ -5018,9 +5029,9 @@ function logContact_(body, actorName, actor) {
   }
   const event = { eventId: 'contact:' + sid, occurredAt: occurredAt, kind: 'contact_logged', source: 'manual', actorId: '', actorName: actorName,
     leadId: leadId, patientId: patientId, personId: taskText_(c.personId, ACTIVITY_ID_MAX), houseId: taskText_(c.houseId, 40),
-    summary: taskText_(contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
-    details: { channel: channel, withWhom: taskText_(c.withWhom, CONTACT_WITH_MAX), reason: taskText_(c.reason, CONTACT_REASON_MAX), outcome: outcome,
-      summary: taskText_(c.summary, CONTACT_SUMMARY_MAX), taskId: taskText_(c.taskId, 80), nextTaskId: nextTask ? nextTask.id : '', noNext: n.none === true ? taskText_(n.explanation, TASK_REASON_MAX) : '' } };
+    summary: taskText_((direction === 'in' ? CONTACT_INCOMING_PREFIX + ' · ' : '') + contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
+    details: { direction: direction, channel: channel, withWhom: taskText_(c.withWhom, CONTACT_WITH_MAX), reason: taskText_(c.reason, CONTACT_REASON_MAX), outcome: outcome,
+      summary: taskText_(c.summary, CONTACT_SUMMARY_MAX), taskId: taskText_(c.taskId, 80), nextTaskId: nextTask ? nextTask.id : '', noNext: noNextText } };
   const ev = activityRow_(event, nowIso);
   if (!ev.ok) return ev;
   const lock = LockService.getScriptLock();
@@ -5047,7 +5058,7 @@ function logContact_(body, actorName, actor) {
       if (prior.task) created = prior.task;
       else { taskWriteRow_(sh, -1, nextTask); created = nextTask; }
     }
-    logAudit_('contact_logged', 'logContact_', patientId || leadId, taskText_(c.withWhom, CONTACT_WITH_MAX), { eventId: ev.row.eventId, outcome: outcome, channel: channel, taskId: tid, nextTaskId: created ? created.id : '', updatedBy: actorName });
+    logAudit_('contact_logged', 'logContact_', patientId || leadId, taskText_(c.withWhom, CONTACT_WITH_MAX), { eventId: ev.row.eventId, outcome: outcome, channel: channel, direction: direction, taskId: tid, nextTaskId: created ? created.id : '', updatedBy: actorName });
     return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
   } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
@@ -5143,7 +5154,7 @@ function logLeadFlag_(body, actorName, actor) {
 }
 
 function contactOutcomeLabel_(o) {
-  return { spoke_follow_up: 'התקיימה שיחה ונדרש המשך', no_answer: 'לא היה מענה', call_back_later: 'התבקשנו לחזור במועד', awaiting_decision: 'ממתינים להחלטה או למידע',
+  return { spoke_follow_up: 'התקיימה שיחה ונדרש המשך', spoke_no_follow_up: 'התקיימה שיחה — לא נדרש המשך', no_answer: 'לא היה מענה', call_back_later: 'התבקשנו לחזור במועד', awaiting_decision: 'ממתינים להחלטה או למידע',
     meeting_set: 'נקבעה פגישה', no_interest_now: 'אין עניין כרגע', bad_contact_details: 'פרטי הקשר אינם תקינים', stop_contact: 'התבקשה הפסקת פניות' }[o] || o;
 }
 

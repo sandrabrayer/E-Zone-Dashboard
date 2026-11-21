@@ -455,7 +455,8 @@ test('D: CACHE_VERSION is v133 (monotonic from v132; v17 burned, never reused)',
   // v155: CHANGELOG-optional-lead-fields.md (from v154).
   // v156: CHANGELOG-crm-reactivate-card.md (from v155).
   // v157: CHANGELOG-crm-leads-view-fixes.md (from v156).
-  assert.equal(v, 'v157');
+  // v158: CHANGELOG-crm-incoming-contact.md (from v157).
+  assert.equal(v, 'v158');
   assert.notEqual(v, 'v17');
 });
 

@@ -1,4 +1,18 @@
-# E-ZONE Ecosystem Status — updated November 20, 2026
+# E-ZONE Ecosystem Status — updated November 21, 2026
+
+## Dashboard CRM — incoming contacts («פנו אלינו») + the lead card shows its details first — November 21, 2026
+
+The contact log assumed WE called. It now records who initiated: a **«📥 פנו אלינו»** button next to
+«📞 תיעוד שיחה» on every card opens the same panel as an incoming contact (wording and outcome list
+adapt; «לא היה מענה» / «פרטי הקשר אינם תקינים» are outgoing-only). The direction is stored in the
+`contact_logged` event's details JSON (`direction: 'out' | 'in'`, no sheet column; old events read
+as outgoing) and the timeline says «פנייה נכנסת». New outcome **«התקיימה שיחה — לא נדרש המשך»**
+(`spoke_no_follow_up`) answers «קשר הבא» without a typed explanation. The lead card's overview now
+reads details → «שיחות ופניות אחרונות» (last 3, with direction) → actions; a manager chosen at lead
+creation reads «פגישה מיועדת עם» (not «נפגש/ת עם») until a held-meeting outcome exists, and a lead
+with no meeting says «פגישה: לא נקבעה». **Code.gs changed** (`logContact_`, `CONTACT_OUTCOMES`,
+`CONTACT_DIRECTIONS`) — deployed by the clasp CI on merge. SW cache v158. See
+`CHANGELOG-crm-incoming-contact.md`.
 
 ## Dashboard CRM — leads view: restore a mobile's lost 0 in edit + newest-first board — November 20, 2026
 
