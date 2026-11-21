@@ -1,5 +1,18 @@
 # E-ZONE Ecosystem Status — updated November 21, 2026
 
+## Dashboard — the classic page no longer opens for a CRM user who arrives through an outside link — November 21, 2026
+
+Sandra: "on the phone the classic version sometimes still comes up, even after deleting and
+reinstalling". Cause (reproduced in Chromium): the session cookie is `SameSite=Strict`, so a
+browser withholds it on a navigation that starts on ANOTHER site (the daily reminder mail's link,
+WhatsApp, a search result). The server sees no session and answers `/` with the classic page;
+that page's own requests carry the cookie, so it opened the classic dashboard for a signed-in CRM
+user. Nothing was cached and reinstalling could not help. Fix: at startup the classic page asks
+`/api/me` (as it always did) and, when the session's `landing` is `crm` and the URL does not say
+`?view=classic`, does `location.replace('/')` — a same-site navigation that carries the cookie —
+at most once (a sessionStorage marker, cleared by the CRM on arrival). The cookie stays Strict.
+No server or Code.gs change. SW cache v160. See `CHANGELOG-crm-cross-site-landing.md`.
+
 ## Dashboard CRM — three call kinds, «ביטול תיעוד», «מה הלאה», «היום» as the team page — November 21, 2026
 
 Sandra's review of the incoming-contact change (same day). (1) «פנו אלינו» is gone: a contact

@@ -1281,6 +1281,31 @@ function loginShouldReload(info, search) {
   return !!(info && (info.landing === 'crm' || view === 'crm'));
 }
 
+/* The classic page was served to a session that belongs on the CRM
+ * (CHANGELOG-crm-cross-site-landing.md). It happens whenever the dashboard is
+ * opened through a link on ANOTHER site — the daily reminder mail, WhatsApp, a
+ * search result: the session cookie is SameSite=Strict, so the browser withholds
+ * it on that first navigation, the server sees no session and answers `/` with
+ * this page; this page's own same-origin requests then DO carry the cookie, and
+ * it used to open the classic dashboard for a signed-in CRM user.
+ *
+ * Where to go instead: '' = stay. The same rule as after a login
+ * (loginShouldReload), for a signed-in user only, and at most once per
+ * CRM_BOUNCE_WINDOW_MS — if the server still answers with this page, we stay
+ * here rather than loop. The target is one of two literal paths, never built
+ * from the URL. Pure — unit-tested. */
+const CRM_BOUNCE_KEY = 'ezone:crm-bounce-at';
+const CRM_BOUNCE_WINDOW_MS = 30000;
+function crmBounceTarget(info, search, lastBounceAt, now) {
+  if (!info || typeof info.user !== 'string' || info.user === '') return '';
+  if (!loginShouldReload(info, search)) return '';
+  const last = Number(lastBounceAt), t = Number(now);
+  if (last > 0 && t >= last && t - last < CRM_BOUNCE_WINDOW_MS) return '';
+  let view = '';
+  try { view = new URLSearchParams(String(search || '')).get('view') || ''; } catch (_) { view = ''; }
+  return view === 'crm' ? '/?view=crm' : '/';
+}
+
 /* The Hebrew message for a failed login response. Pure. */
 function loginErrorMessage(status, error) {
   if (status === 429 && error === 'locked') return 'נעול ל־15 דקות — יותר מדי ניסיונות שגויים';
@@ -1531,6 +1556,21 @@ function renderWhoami(name) {
  * (unauthenticated / network) changes nothing — the normal 401 flow owns
  * those cases. Runs once per page load. */
 let _sessionUserChecked = false;
+/* Hand a CRM-landing session over to the CRM (see crmBounceTarget). A
+ * navigation this page starts is same-site, so it carries the Strict cookie and
+ * the server answers `/` with the CRM. `replace`: the classic page leaves the
+ * history, so «back» does not return to a page that only bounces forward.
+ * → true when the page is leaving. */
+function bounceToCrm(info) {
+  let last = 0;
+  try { last = Number(sessionStorage.getItem(CRM_BOUNCE_KEY)) || 0; } catch (_) { last = 0; }
+  const now = Date.now();
+  const target = crmBounceTarget(info, location.search, last, now);
+  if (!target) return false;
+  try { sessionStorage.setItem(CRM_BOUNCE_KEY, String(now)); } catch (_) { /* private mode: the server-side rule still ends the bounce */ }
+  location.replace(target);
+  return true;
+}
 async function checkSessionUser() {
   if (_sessionUserChecked) return;
   _sessionUserChecked = true;
@@ -1540,6 +1580,7 @@ async function checkSessionUser() {
     showPinScreen();
     return;
   }
+  if (bounceToCrm(info)) return;
   applySessionInfo(info);
 }
 
