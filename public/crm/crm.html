@@ -38,6 +38,10 @@
         <button type="button" id="crm-switch-user" class="btn crm-switch-user">החלפת משתמש</button>
         <span class="crm-search-wrap"><input id="crm-search" class="crm-search" type="search" placeholder="חיפוש לקוח / ליד" aria-label="חיפוש" enterkeyhint="search"><button type="button" id="crm-search-go" class="btn crm-search-go" aria-label="חיפוש">🔍</button></span>
       </header>
+      <div id="crm-intake-tools" hidden>
+        <div class="desk-actions"><button type="button" class="btn small" data-desk-lookup>בדיקת מספר פונה</button><button type="button" class="btn small" data-desk-families>פניות משפחות</button></div>
+        <div data-desk-alerts aria-live="polite"></div>
+      </div>
       <section id="crm-main" aria-live="polite"></section>
     </main>
     <div id="crm-scrim" class="scrim"></div>
@@ -52,6 +56,7 @@
   <script src="billing-control-rules.js?v=__BUILD__"></script>
   <script src="revenue-engine.js?v=__BUILD__"></script>
   <script src="/family-visit.js?v=__BUILD__"></script>
+  <script src="crm/intake-desk.js?v=__BUILD__"></script>
   <script src="crm/crm.js?v=__BUILD__"></script>
   <!-- PWA (CHANGELOG-crm-pwa.md): the same worker as the classic page, registered after load; non-fatal. -->
   <script>

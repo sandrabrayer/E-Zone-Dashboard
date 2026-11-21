@@ -26,8 +26,8 @@ function loadSw() {
 }
 const sw = loadSw();
 
-test('sw.js: v160 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
-  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v160');
+test('sw.js: v161 (monotonic from the live v93 via v94…v131, with their comments); CRM bundle cache-first at its hash, network-first otherwise; "/" network-first; data never cached', () => {
+  assert.equal(/var CACHE_VERSION = '(v\d+)';/.exec(SW_SRC)[1], 'v161');
   assert.ok(SW_SRC.includes('v157 → v158:') && SW_SRC.includes('CHANGELOG-family-visit-draft.md'));
   assert.ok(SW_SRC.includes('v158 → v159:') && SW_SRC.includes('CHANGELOG-contact-events.md'));
   assert.ok(SW_SRC.includes('v156 → v157:') && SW_SRC.includes('CHANGELOG-crm-leads-view-fixes.md'));

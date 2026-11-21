@@ -452,7 +452,8 @@
 // v157 → v158: family visit confirmation from a saved appointment (CHANGELOG-family-visit-draft.md).
 // v158 → v159: intake contact review on desktop and mobile (CHANGELOG-contact-events.md).
 // v159 → v160: intake promises in the contact form (CHANGELOG-intake-promises.md).
-var CACHE_VERSION = 'v160';
+// v160 → v161: repeat callers and the private family desk share the signed-in CRM shell.
+var CACHE_VERSION = 'v161';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
@@ -482,7 +483,7 @@ var PRECACHE_URLS = [
  *                     network round trip. Matched by EXACT url.
  *   'network'       — everything else: pass through to the network. */
 /* The JS/CSS files index.html links with a content hash (server.js ASSETS). */
-var BUNDLE_PATHS = ['/family-visit.js', '/family-visit.css', '/app.js', '/style.css', '/crm/crm.js', '/crm/crm.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js', '/revenue-engine.js'];
+var BUNDLE_PATHS = ['/crm/intake-desk.js', '/family-visit.js', '/family-visit.css', '/app.js', '/style.css', '/crm/crm.js', '/crm/crm.css', '/payment-report-rules.js', '/funder.js', '/billing-control-rules.js', '/billing-document-review.js', '/billing-work-calendar.js', '/refund-rules.js', '/funder-grace.js', '/cycle-balance.js', '/discharge-alerts.js', '/committee-alerts.js', '/leads-funnel.js', '/returning-patient.js', '/patient-retention.js', '/report-xlsx.js', '/revenue-engine.js'];
 
 /* True for `?v=<exactly 12 lowercase hex>` — the server's content hash. The
  * old `?v=<BUILD_ID>` (digits-dash-base36) never matches. Pure. */

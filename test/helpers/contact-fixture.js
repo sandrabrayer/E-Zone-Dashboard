@@ -15,6 +15,7 @@ function makeDesk() {
   g.sandbox.SpreadsheetApp.flush = () => {};
   g.sandbox.Utilities.formatDate = (d, zone) => new Intl.DateTimeFormat('sv-SE', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(d));
   g.run(SOURCE);
+  g.run(fs.readFileSync(path.join(__dirname, '../../apps-script/IntakeDesk.gs'), 'utf8'));
   function addLead(data = {}, name = 'Leads') {
     const schema = name === 'Leads' ? 'LEAD_COLUMNS' : name === 'לידים לא רלוונטיים' ? 'IRRELEVANT_LEAD_COLUMNS' : 'REMOVED_LEAD_COLUMNS';
     const cols = Array.from(g.run(schema));

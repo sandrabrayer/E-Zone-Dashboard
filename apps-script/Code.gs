@@ -1218,7 +1218,7 @@ const TASK_READ_MAX = 1000;
 /* Contact outcomes (spec §8) — what happened; the next action is separate. */
 const CONTACT_OUTCOMES = ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
   'no_interest_now', 'bad_contact_details', 'stop_contact'];
-const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
+const CONTACT_CHANNELS = ['phone', 'whatsapp', 'whatsapp_call', 'sms', 'email', 'in_person', 'other'];
 // Operational promises the intake team can record together. All are non-financial staff work.
 const INTAKE_PROMISES = {
   catalog: { kind: 'admission', title: 'לשלוח קטלוג' },
@@ -1673,7 +1673,7 @@ const CALLER_CLASSES = ['proxy', 'open', 'none', 'wrong'];
  * an attacker can neither spam distinct rows nor inject a formula.
  * test/proxy-secret-transition.test.js checks this list against handle_. */
 const PROXY_KNOWN_ACTIONS = [
-  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent',
+  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent', 'intakeContactDesk',
   'managersWork',
   'getData', 'getAdmittedRoster', 'getDischargedRoster', 'createLeadFromTherapists', 'saveAll', 'recordOutpatientLeadSend', 'getOutpatientHandoffRef', 'dischargeOutpatientPayload', 'getPayments', 'savePayment',
   'updatePayment', 'upsertBillingOverride', 'deleteBillingOverride',
@@ -1741,7 +1741,7 @@ function gatedEntry_(e, method) {
   const params = collectParams_(e);
   // Contact metadata and credentials are body-only. A public probe must never
   // enter the transitional proxy logger or create a sheet.
-  if (['ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent'].includes(params.action)) {
+  if (['ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent', 'intakeContactDesk'].includes(params.action)) {
     const body = collectParams_({ postData: e && e.postData });
     if (method !== 'POST' || body.action !== params.action) return jsonOut_({ ok: false, error: 'unauthorized' });
     if (body.action === 'ingestCommunicationEvent') {
@@ -2075,6 +2075,7 @@ function handle_(params) {
       if (!commIngressAllowed_(params)) return jsonOut_({ ok: false, error: 'unauthorized' });
       return jsonOut_(ingestCommunicationEvent_(params));
     }
+    if (action === 'intakeContactDesk') return jsonOut_(intakeDesk_(params, actingUser_(params)));
     if (action === 'getCommunicationReview' || action === 'resolveCommunicationEvent') {
       const actor = actingUser_(params);
       if (!commStaff_(actor)) return jsonOut_({ ok: false, error: 'forbidden' });

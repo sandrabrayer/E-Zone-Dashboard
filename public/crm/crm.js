@@ -2966,7 +2966,7 @@
     { id: 'call_back_later', label: 'התבקשנו לחזור במועד' }, { id: 'awaiting_decision', label: 'ממתינים להחלטה או למידע' },
     { id: 'meeting_set', label: 'נקבעה פגישה' }, { id: 'no_interest_now', label: 'אין עניין כרגע' },
     { id: 'bad_contact_details', label: 'פרטי הקשר אינם תקינים' }, { id: 'stop_contact', label: 'התבקשה הפסקת פניות' }];
-  const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
+  const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'whatsapp_call', label: 'שיחת וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
   const INTAKE_PROMISES = [
     { code: 'catalog', title: 'לשלוח קטלוג' },
     { code: 'documents', title: 'לבדוק אילו מסמכים חסרים' },
@@ -7805,6 +7805,8 @@
         const me = res[0], data = res[1];
         if (!me || me.ok === false) throw new Error('אין התחברות');
         state.me = me;
+        if (win.IntakeDesk) win.IntakeDesk.mount({ me: me, openLead: function (id) { openDrawer('lead', id); },
+          houseName: houseName, newId: newSubmissionId, when: whenLocal });
         $('#crm-user').textContent = me.user || '';
         if ($('#crm-who')) $('#crm-who').textContent = me.user || '';
         if (areasFor(me).indexOf(state.area) < 0) state.area = 'today';

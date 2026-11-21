@@ -10,7 +10,7 @@ const { personalToken, personalCookie, userPinHashes, TEST_PEPPER } = require('.
 async function serveDesk(desk) {
   const secret = 'test-only-desktop-and-mobile-communications';
   const env = { PROXY_SECRET: PROXY, SESSION_SECRET: secret, SHEETS_URL: 'https://synthetic.invalid/exec', PIN_PEPPER: TEST_PEPPER,
-    USER_PIN_HASHES: userPinHashes(['vered', 'dana', 'ortal']), CRM_ENABLED: 'true', SHEETS_READ_CACHE_MS: '0' };
+    USER_PIN_HASHES: userPinHashes(['vered', 'dana', 'ortal', 'sandra']), CRM_ENABLED: 'true', SHEETS_READ_CACHE_MS: '0' };
   const old = {};
   for (const [k, v] of Object.entries(env)) { old[k] = process.env[k]; process.env[k] = v; }
   const location = require.resolve('../server'); delete require.cache[location];
@@ -43,10 +43,15 @@ test('Express refuses anonymous, controller and generic proxy access; dedicated 
     const cookie = (id) => ({ Cookie: personalCookie(server.secret, id) });
     assert.equal((await fetch(server.base + '/api/communications/review')).status, 401);
     assert.equal((await fetch(server.base + '/api/communications/review', { headers: cookie('ortal') })).status, 403);
-    for (const action of ['getCommunicationReview', 'resolveCommunicationEvent', 'ingestCommunicationEvent']) {
+    for (const action of ['getCommunicationReview', 'resolveCommunicationEvent', 'ingestCommunicationEvent', 'intakeContactDesk']) {
       assert.equal((await fetch(server.base + '/api/sheets?action=' + action, { headers: cookie('vered') })).status, 403);
       assert.equal((await fetch(server.base + '/api/sheets', { method: 'POST', body: JSON.stringify({ action }), headers: { ...cookie('vered'), 'Content-Type': 'application/json' } })).status, 403);
     }
+    const deskPost = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({op:'families'}) };
+    assert.equal((await fetch(server.base + '/api/communications/desk', deskPost)).status, 401);
+    assert.equal((await fetch(server.base + '/api/communications/desk', {...deskPost, headers:{...deskPost.headers, ...cookie('ortal')}})).status, 403);
+    const allowed = await fetch(server.base + '/api/communications/desk', {...deskPost, headers:{...deskPost.headers, ...cookie('sandra')}});
+    assert.match(allowed.headers.get('cache-control'), /no-store/); assert.deepEqual((await allowed.json()).requests, []);
     const ok = await fetch(server.base + '/api/communications/review', { headers: cookie('dana') });
     assert.match(ok.headers.get('cache-control'), /no-store/); assert.equal((await ok.json()).total, 1);
     const res = await fetch(server.base + '/api/communications/resolve', { method: 'POST', headers: { ...cookie('dana'), 'Content-Type': 'application/json' },
@@ -176,5 +181,79 @@ test('a mobile intake conversation with two promises creates separate tasks visi
     await desktop.locator('#crm-drawer [data-tab="activity"]').click();
     await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/דווחה שליחת קטלוג בוואטסאפ.*קטלוג תרגול 2.*פונה לדוגמה/).waitFor();
     assert.equal(d.tasks().filter(t=>t.status==='open').length,1);
+  } finally { if (browser) await browser.close(); await s.close(); }
+});
+
+test('Sandra sees Vered’s previous contact on mobile and can hand a private family request to the desktop team', { skip: !pw || !executable }, async () => {
+  const d = makeDesk();
+  d.addLead();
+  const threeDaysAgo = new Date(Date.now() - 3 * 86400000).toISOString();
+  const today = new Date().toISOString().slice(0, 10);
+  assert.equal(d.staff('logContact', {
+    submissionId: 'sub-' + '8'.repeat(32),
+    contact: {leadId:'test-card-a', channel:'phone', outcome:'spoke_follow_up', occurredAt:threeDaysAgo, summary:'private text'},
+    next: { promises: [{code:'catalog', assignee:'ורד', dueDate:today}] }
+  }).ok, true);
+  const cols = Array.from(d.g.run('PATIENT_COLUMNS'));
+  const patients = require('./helpers/gs-sandbox').richSheet('Patients', cols);
+  d.g.sandbox.__sheets.Patients = patients;
+  const resident = {id:'resident-demo', name:'מטופלת לדוגמה', status:'active', houseId:'ramot', date:'2020-01-01'};
+  patients.appendRow(cols.map(c => resident[c] || ''));
+  const now = new Date(Date.now() - 100).toISOString();
+  d.receive({status:'ringing', occurredAt:now, observedAt:now});
+
+  const s = await serveDesk(d);
+  let browser;
+  try {
+    browser = await pw.chromium.launch({executablePath:executable, args:['--no-sandbox']});
+    const phone = await workstation(browser, s, 360, 'sandra');
+    const alert = phone.locator('[data-desk-alerts]');
+    await alert.getByRole('button', {name:/בדקתי מי הפונה/}).waitFor();
+    assert.doesNotMatch(await alert.innerText(), /ורד|קטלוג/);
+    await alert.getByRole('button', {name:/בדקתי מי הפונה/}).click();
+    await alert.getByText(/לשלוח קטלוג/).waitFor();
+    assert.match(await alert.innerText(), /ורד/);
+    assert.doesNotMatch(await alert.innerText(), /private text/);
+    await alert.getByRole('button', {name:'סגירת ההתראה'}).click();
+    await phone.getByRole('button', {name:'בדיקת מספר פונה'}).click();
+    let dialog = phone.getByRole('dialog');
+    await dialog.getByLabel('מספר הטלפון של הפונה').fill('0500000001');
+    await dialog.getByRole('button', {name:'בדיקת קשר קודם'}).click();
+    await dialog.getByRole('button', {name:/בדקתי מי הפונה/}).click();
+    await dialog.getByText(/לשלוח קטלוג/).waitFor();
+    await dialog.getByRole('button', {name:'סגירה', exact:true}).click();
+
+    await phone.getByRole('button', {name:'פניות משפחות',exact:true}).click();
+    await phone.getByRole('button', {name:'רישום פנייה מהמשפחה'}).click();
+    dialog = phone.getByRole('dialog');
+    await dialog.getByLabel('סוג הפנייה').selectOption('information');
+    await dialog.getByLabel('מספר לחזרה').fill('0500000088');
+    await dialog.getByLabel('אחראי/ת לחזרה').selectOption('vered');
+    await dialog.getByLabel('מועד לחזרה').fill(today);
+    assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),true);
+    await dialog.getByRole('button', {name:'שמירת הפנייה'}).click();
+    await dialog.getByText(/פניות פתוחות · 1/).waitFor();
+
+    const desktop = await workstation(browser, s, 1280, 'vered');
+    await desktop.getByRole('button', {name:'פניות משפחות',exact:true}).click();
+    const deskDialog = desktop.getByRole('dialog');
+    await deskDialog.getByRole('button', {name:'טיפול בפנייה'}).click();
+    await deskDialog.getByLabel('פעולה', {exact:true}).selectOption('routed');
+    await deskDialog.getByLabel('יעד להעברה').selectOption('resident-demo');
+    await deskDialog.getByRole('checkbox', {name:/אימתתי את היעד/}).check();
+    await deskDialog.getByRole('button', {name:'שמירת העדכון'}).click();
+    await deskDialog.getByText(/הועברה לצוות הבית/).waitFor();
+    await deskDialog.getByRole('button', {name:'טיפול בפנייה'}).click();
+    await deskDialog.getByLabel('פעולה', {exact:true}).selectOption('answered');
+    await deskDialog.getByRole('checkbox', {name:/המענה נמסר/}).check();
+    await deskDialog.getByRole('button', {name:'שמירת העדכון'}).click();
+    assert.equal(await deskDialog.getByRole('checkbox', {name:/בדקתי כעת/}).evaluate(e => e.validity.valueMissing), true);
+    await deskDialog.getByRole('checkbox', {name:/בדקתי כעת/}).check();
+    await deskDialog.getByRole('button', {name:'שמירת העדכון'}).click();
+    await deskDialog.getByText('אין פניות משפחות פתוחות.').waitFor();
+    await dialog.getByRole('button', {name:'רענון'}).click();
+    await dialog.getByText('פניות שטופלו · 1').click();
+    await dialog.getByText(/נמסר מענה מורשה/).waitFor();
+    assert.equal(await desktop.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1),true);
   } finally { if (browser) await browser.close(); await s.close(); }
 });

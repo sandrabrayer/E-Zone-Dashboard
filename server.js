@@ -290,6 +290,7 @@ const ASSETS = createAssetStore({
   /* The CRM shell (C2, CHANGELOG-crm-shell-areas.md): hashed like the others,
    * loaded only by /?view=crm, NOT in sw.js BUNDLE_PATHS. */
   '/crm/crm.js': { file: path.join(__dirname, 'public', 'crm', 'crm.js'), mime: 'application/javascript' },
+  '/crm/intake-desk.js': { file: path.join(__dirname, 'public', 'crm', 'intake-desk.js'), mime: 'application/javascript' },
   '/crm/crm.css': { file: path.join(__dirname, 'public', 'crm', 'crm.css'), mime: 'text/css' },
 });
 
@@ -383,6 +384,7 @@ app.get('/app.js', sendStatic('app.js', 'application/javascript'));
 app.get('/family-visit.js', sendStatic('family-visit.js', 'application/javascript'));
 app.get('/family-visit.css', sendStatic('family-visit.css', 'text/css'));
 app.get('/crm/crm.js', sendStatic('crm/crm.js', 'application/javascript'));
+app.get('/crm/intake-desk.js', sendStatic('crm/intake-desk.js', 'application/javascript'));
 app.get('/crm/crm.css', sendStatic('crm/crm.css', 'text/css'));
 /* The payment-report rules (Phase 3 PR 2): the SAME file the server tests
  * require (lib/payment-report-rules.js, a pure IIFE that exposes
@@ -1109,7 +1111,7 @@ function viewFilteredResponse(action, data, principal) {
  * the browser (CHANGELOG-meeting-with-ambulatory.md: the send log behind the
  * «אמבולטורי» handoff must not be forgeable from a page). */
 const SERVER_ONLY_ACTIONS = Object.freeze(['recordOutpatientLeadSend', 'dischargeOutpatientPayload',
-  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent', 'getFamilyVisitSource', 'getOutpatientHandoffRef']);
+  'ingestCommunicationEvent', 'getCommunicationReview', 'resolveCommunicationEvent', 'intakeContactDesk', 'getFamilyVisitSource', 'getOutpatientHandoffRef']);
 function refuseServerOnlyActions(req, res, next) {
   const src = req.method === 'GET' ? (req.query || {}) : (req.body || {});
   if (SERVER_ONLY_ACTIONS.indexOf(src.action) < 0) return next();
@@ -1148,6 +1150,25 @@ function communicationDesk(resolveEvent) {
 }
 app.get('/api/communications/review', requireSession, requireProxySecret, communicationDesk(false));
 app.post('/api/communications/resolve', requireSession, requireProxySecret, communicationDesk(true));
+
+app.post('/api/communications/desk', requireSession, requireProxySecret, async (req, res) => {
+  noCache(res);
+  const principal = sessionPrincipalFromRequest(req);
+  if (!contactDeskStaff(principal)) return res.status(403).json({ ok: false, error: 'forbidden' });
+  const p = req.body || {};
+  if (!['signals', 'lookup', 'families', 'residents', 'create', 'advance'].includes(p.op)) return res.status(400).json({ ok: false, error: 'bad_input' });
+  const body = { action: 'intakeContactDesk', user: principal.user, op: p.op };
+  for (const key of ['eventId', 'phone', 'verified', 'requestId', 'kind', 'channel', 'owner', 'dueDate', 'revision', 'to', 'patientId', 'house', 'confirmed', 'permissionVerified']) {
+    if (Object.hasOwn(p, key)) body[key] = p[key];
+  }
+  try {
+    const result = await sheetsPost(body, principal);
+    if (result && result.ok === true) return res.json(result);
+    const errors = { forbidden: 403, unauthorized: 403, not_found: 404, changed_request: 409, check_resident: 409, check_permission: 409, bad_input: 400 };
+    if (result && Object.hasOwn(errors, result.error)) return res.status(errors[result.error]).json({ ok: false, error: result.error });
+  } catch (_) { /* No contact data in diagnostics. */ }
+  return res.status(503).json({ ok: false, error: 'unavailable' });
+});
 
 /* saveAll only: hand the «אמבולטורי» leads saveAll_ listed to Outpatient
  * (lib/ambulatory-handoff.js) and record each outcome in Code.gs. The list
