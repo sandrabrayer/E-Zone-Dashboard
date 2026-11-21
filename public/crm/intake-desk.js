@@ -52,14 +52,17 @@
   function showHistory(box, record, query) {
     box.replaceChildren();
     const last = record.prior;
-    if (record.match === 'history' && last) {
-      box.append(el('strong', 'פנייה חוזרת · קשר קודם בכרטיס'));
+    if (['history','number_history'].includes(record.match) && last) {
+      box.append(el('strong', record.match === 'history' ? 'פנייה חוזרת · קשר קודם בכרטיס' : 'קשר קודם עם המספר הזה'));
       box.append(el('p', [last.by || 'איש צוות לא מזוהה', context.when(last.at), historyChannels[last.channel], last.outcome].filter(Boolean).join(' · ')));
+      if (record.match === 'number_history') {
+        box.append(el('p', 'הקשר הקודם עדיין דורש שיוך לכרטיס פנייה.')); return;
+      }
       if (record.next) box.append(el('p', 'משימת ההמשך: ' + [record.next.title, record.next.owner, context.when(record.next.due)].filter(Boolean).join(' · ')));
       else box.append(el('p', 'אין משימת המשך פתוחה בכרטיס.'));
       box.append(button('פתיחת כרטיס הפנייה', function () { if (dialog) dialog.close(); context.openLead(record.leadId); }));
-    } else if (record.match === 'verify') {
-      box.append(el('strong', 'ייתכן שזו פנייה חוזרת. יש קשר קודם בכרטיס תואם.'));
+    } else if (record.match === 'verify' || record.match === 'number_verify') {
+      box.append(el('strong', record.match === 'verify' ? 'ייתכן שזו פנייה חוזרת. יש קשר קודם בכרטיס תואם.' : 'יש קשר קודם של הצוות עם המספר הזה.'));
       const problem = status();
       const b = button('בדקתי מי הפונה · הצגת הקשר הקודם', async function () {
         b.disabled = true;
@@ -99,7 +102,7 @@
         const record = await request(query);
         if (current !== generation || doc.hidden) break;
         remember(id);
-        if (!['history','verify'].includes(record.match)) continue;
+        if (!['history','verify','number_verify'].includes(record.match)) continue;
         const alert = el('article'); alert.className = 'desk-alert';
         const box = el('div'); showHistory(box, record, query);
         alert.append(box, button('סגירת ההתראה', function () { alert.remove(); }));

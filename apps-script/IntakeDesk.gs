@@ -22,12 +22,20 @@ function intakeDesk_(p, actor) {
 function deskSignals_() {
   const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(COMM_SHEET);
   if (!sheet || sheet.getLastRow() < 2) return [];
-  const now = Date.now(), start = new Date(now - 3 * 60000).toISOString(), end = new Date(now).toISOString();
-  // Read only metadata (id through occurredAt). A late receipt about an old
-  // interaction must not look like a new caller. Never return phone numbers here.
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 5).getValues().filter(function (r) {
-    return r[2] === 'in' && r[4] >= start && r[4] <= end;
-  }).map(function (r) { return r[0]; });
+  const size = sheet.getLastRow();
+  const start = new Date(Date.now() - 3 * 60000).toISOString(), end = new Date().toISOString();
+  // New events are appended. Workstations can reuse the recent timestamps
+  // and opaque event IDs while the ledger length is unchanged.
+  const key = 'intake-signals-v1-' + size, cache = CacheService.getScriptCache();
+  let recent = null;
+  try { const stored = cache.get(key); if (stored) recent = JSON.parse(stored); } catch (_) {}
+  if (!Array.isArray(recent)) {
+    recent = sheet.getRange(2, 1, size - 1, 5).getValues().filter(function (r) {
+      return r[2] === 'in' && r[4] >= start;
+    }).map(function (r) { return [r[0], r[4]]; });
+    try { cache.put(key, JSON.stringify(recent), 30); } catch (_) {}
+  }
+  return recent.filter(function (r) { return r[1] >= start && r[1] <= end; }).map(function (r) { return r[0]; });
 }
 
 function deskPrevious_(lead, phone, before, rows) {
@@ -38,7 +46,7 @@ function deskPrevious_(lead, phone, before, rows) {
   }
   // Historical manual logs refer to the card. They do not establish which
   // relative was speaking. Use only the outcome and never copy the free text.
-  commRows_(ACTIVITY_SHEET, ACTIVITY_COLUMNS).forEach(function (r) {
+  if (lead) commRows_(ACTIVITY_SHEET, ACTIVITY_COLUMNS).forEach(function (r) {
     if (r.kind !== 'contact_logged' || r.leadId !== lead.id) return;
     let info;
     try { info = JSON.parse(r.detailsJson || '{}'); } catch (_) { return; }
@@ -46,7 +54,8 @@ function deskPrevious_(lead, phone, before, rows) {
     take(r.occurredAt, String(r.actorName || ''), info.channel, contactOutcomeLabel_(info.outcome));
   });
   rows.forEach(function (r) {
-    if (r.phone !== phone || r.leadId !== lead.id || r.resolution !== 'linked') return;
+    if (r.phone !== phone) return;
+    if (lead ? r.leadId !== lead.id || r.resolution !== 'linked' : r.resolution !== 'pending' || !r.agentKey) return;
     if (r.channel === 'phone' && r.status === 'answered') take(r.occurredAt, COMM_AGENT_NAMES[r.agentKey] || '', 'phone', 'שיחה שנענתה');
     if (r.channel === 'whatsapp' && r.direction === 'out' && r.agentKey && ['sent','delivered','read'].includes(r.status))
       take(r.occurredAt, COMM_AGENT_NAMES[r.agentKey] || '', 'whatsapp', 'נשלחה הודעה');
@@ -62,14 +71,18 @@ function deskCaller_(p) {
   if (!phone) return { ok: true, match: 'unidentified' };
   const roster = commRoster_();
   const lead = commUniqueLead_(roster, phone);
-  if (!lead) {
-    const known = roster.active.concat(roster.other).some(function (x) { return x.primary === phone || x.contact === phone || x.billing === phone; });
-    return { ok: true, match: known ? 'review' : 'none' };
-  }
-  if (event && event.resolution === 'linked' && event.leadId !== lead.id) return { ok: true, match: 'review' };
   const before = event ? event.occurredAt : new Date(Date.now() + 1).toISOString();
-  const prior = deskPrevious_(lead, phone, before, rows);
-  if (!prior) return { ok: true, match: 'no_history' };
+  if (!lead && roster.active.concat(roster.other).some(function (x) { return x.primary === phone || x.contact === phone || x.billing === phone; }))
+    return { ok: true, match: 'review' };
+  if (event && event.resolution === 'linked' && (!lead || event.leadId !== lead.id)) return { ok: true, match: 'review' };
+  const prior = lead && deskPrevious_(lead, phone, before, rows);
+  if (!prior) {
+    // An earlier answered call may predate the first lead card. It is evidence
+    // about this number only and never grants access to a card or a task.
+    const fromNumber = deskPrevious_(null, phone, before, rows);
+    if (fromNumber) return p.verified === true ? { ok: true, match: 'number_history', prior: fromNumber } : { ok: true, match: 'number_verify' };
+    return { ok: true, match: lead ? 'no_history' : 'none' };
+  }
   const proof = event && event.resolution === 'linked' && rows.some(function (r) {
     return r.id === (event.grantId || event.id) && r.phone === phone && r.leadId === lead.id && r.remember === '1' && !r.forgottenAt;
   });

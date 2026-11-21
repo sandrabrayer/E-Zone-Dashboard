@@ -75,3 +75,24 @@ test('family requests retain accountable handoff, distinguish relay and release,
   const requests=call(d,{op:'families'}).requests;assert.equal(requests.length,2);
   assert.equal(call(d,{op:'families'},'ortal').ok,false);
 });
+
+test('an answered but unassigned call to Vered is visible as number history even before a lead is opened', () => {
+  const d = makeDesk();
+  const before = new Date(Date.now() - 3 * 86400000).toISOString();
+  d.receive({status:'answered',agentKey:'vered',occurredAt:before,observedAt:before});
+  const id = 'c'.repeat(32), now = new Date(Date.now() - 100).toISOString();
+  d.receive({objectRef:id,status:'ringing',occurredAt:now,observedAt:now});
+  const query = {op:'lookup',eventId:'phone-'+id};
+  assert.deepEqual(call(d,query), {ok:true,match:'number_verify'});
+  const result = call(d,{...query,verified:true});
+  assert.equal(result.match,'number_history'); assert.equal(result.prior.by,'ורד');
+  assert.equal(result.prior.at,before); assert.equal(result.leadId,undefined); assert.equal(result.next,undefined);
+  d.addLead();
+  assert.equal(call(d,query).match,'number_verify');
+  assert.ok(d.rows().every(r=>r.resolution==='pending'));
+  assert.deepEqual(call(d,{op:'signals'}).ids,['phone-'+id]);
+  d.receive({objectRef:'d'.repeat(32),status:'ringing',occurredAt:now,observedAt:now});
+  assert.equal(call(d,{op:'signals'}).ids.length,2);
+  d.addLead({id:'shared-number',phone:PHONE});
+  assert.deepEqual(call(d,{...query,verified:true}),{ok:true,match:'review'});
+});
