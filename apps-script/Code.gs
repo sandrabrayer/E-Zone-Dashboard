@@ -1219,10 +1219,20 @@ const TASK_READ_MAX = 1000;
 const CONTACT_OUTCOMES = ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
   'no_interest_now', 'bad_contact_details', 'stop_contact'];
 const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
+// Operational promises the intake team can record together. All are non-financial staff work.
+const INTAKE_PROMISES = {
+  catalog: { kind: 'admission', title: 'להכין קטלוג מאושר למשפחה' },
+  documents: { kind: 'review', title: 'לבדוק אילו מסמכים חסרים' },
+  visit: { kind: 'admission', title: 'לתאם ביקור עם המשפחה' },
+  status: { kind: 'call', title: 'לחזור למשפחה עם עדכון סטטוס' }
+};
+const INTAKE_PROMISE_OWNERS = ['ורד', 'דנה', 'סנדרה'];
 const CONTACT_SUMMARY_MAX = 1000;
 const CONTACT_WITH_MAX = 80;
 const CONTACT_REASON_MAX = 200;
 const TASK_MESSAGES = {
+  bad_promises: 'לכל התחייבות נדרשים אחראי ומועד. בחרי התחייבויות רק אחרי קשר עם המשפחה.',
+  changed_promises: 'הקשר כבר נשמר עם פרטים אחרים. בדקי את הכרטיס לפני שינוי המשימות.',
   missing_task: 'חסרה משימה',
   bad_submission_id: 'מזהה שליחה לא תקין',
   bad_kind: 'סוג משימה לא מוכר',
@@ -4523,14 +4533,20 @@ function appendActivity_(event) {
 /* The dedupe-scan + append of ONE validated row. The caller holds the script
  * lock (appendActivity_), or is a writer that already holds it (the B2 hook
  * below — logAudit_ runs inside every writer's own lock). Never updates. */
-function activityAppendRow_(row) {
+function activityAppendRow_(row, readDuplicate) {
   const sh = getOrCreateSheet_(ACTIVITY_SHEET, ACTIVITY_COLUMNS);
   const lastRow = sh.getLastRow();
   if (lastRow >= 2) {
     const ids = sh.getRange(2, 1, lastRow - 1, 1).getValues();
     for (let i = 0; i < ids.length; i++) {
       if (String(ids[i][0] == null ? '' : ids[i][0]).trim() === row.eventId) {
-        return { ok: true, written: false, duplicate: true, eventId: row.eventId };
+        const result = { ok: true, written: false, duplicate: true, eventId: row.eventId };
+        if (readDuplicate) {
+          const cells = sh.getRange(i + 2, 1, 1, ACTIVITY_COLUMNS.length).getValues()[0];
+          result.original = {};
+          ACTIVITY_COLUMNS.forEach(function (key, column) { result.original[key] = cells[column]; });
+        }
+        return result;
       }
     }
   }
@@ -5054,6 +5070,22 @@ function cancelTask_(body, actorName, actor) {
   }, 'task_cancelled', 'task_cancelled', function (t) { return 'המשימה בוטלה: ' + t.title; });
 }
 
+// Validate the entire plan before writing the contact or completing an existing callback.
+function intakePromises_(next, outcome) {
+  const chosen = next.promises;
+  const choices = Object.keys(INTAKE_PROMISES);
+  if (Object.keys(next).length !== 1 || !Array.isArray(chosen) || !chosen.length || chosen.length > choices.length ||
+      ['spoke_follow_up', 'call_back_later', 'awaiting_decision', 'meeting_set'].indexOf(outcome) < 0) return null;
+  const byCode = {};
+  for (const item of chosen) {
+    if (!item || choices.indexOf(item.code) < 0 || byCode[item.code] || INTAKE_PROMISE_OWNERS.indexOf(item.assignee) < 0 ||
+        typeof item.dueDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(item.dueDate) || !taskIso_(item.dueDate) ||
+        new Date(item.dueDate + 'T12:00:00Z').getUTCDate() !== Number(item.dueDate.slice(-2))) return null;
+    byCode[item.code] = { code: item.code, assignee: item.assignee, dueDate: item.dueDate };
+  }
+  return choices.filter(function (code) { return !!byCode[code]; }).map(function (code) { return byCode[code]; });
+}
+
 /* action=logContact { contact, next, submissionId } — ONE transaction under the lock:
  *   1. the contact attempt → Activity event contact_logged (eventId 'contact:<sid>'; a replay
  *      answers the same event and writes nothing twice);
@@ -5081,7 +5113,22 @@ function logContact_(body, actorName, actor) {
   const occurredAt = activityIso_(c.occurredAt) || (c.occurredAt && taskIso_(c.occurredAt) ? taskIso_(c.occurredAt) + 'T12:00:00.000Z' : nowIso);
   const n = b.next && typeof b.next === 'object' ? b.next : { none: true, explanation: '' };
   let nextTask = null;
-  if (n.none === true) {
+  let promises = null;
+  let promisedTasks = [];
+  if (Object.prototype.hasOwnProperty.call(n, 'promises')) {
+    promises = intakePromises_(n, outcome);
+    if (!promises) return taskNo_('bad_promises');
+    for (const item of promises) {
+      const definition = INTAKE_PROMISES[item.code];
+      const checked = taskClean_({ kind: definition.kind, title: definition.title, leadId: leadId, patientId: patientId,
+        personId: c.personId, houseId: c.houseId, source: 'contact', dueDate: item.dueDate, assignee: item.assignee },
+        actorName, nowIso, sid, item.code);
+      if (!checked.ok) return checked;
+      if (!taskVisible_(checked.task, actor)) return taskNo_('forbidden');
+      checked.task.contactEventId = 'contact:' + sid;
+      promisedTasks.push(checked.task);
+    }
+  } else if (n.none === true) {
     if (taskText_(n.explanation, TASK_REASON_MAX).length < 2) return taskNo_('missing_next_explanation');
   } else {
     let dueDate = n.dueDate ? taskIso_(n.dueDate) : '';
@@ -5105,18 +5152,31 @@ function logContact_(body, actorName, actor) {
     summary: taskText_(contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
     details: { channel: channel, withWhom: taskText_(c.withWhom, CONTACT_WITH_MAX), reason: taskText_(c.reason, CONTACT_REASON_MAX), outcome: outcome,
       summary: taskText_(c.summary, CONTACT_SUMMARY_MAX), taskId: taskText_(c.taskId, 80), nextTaskId: nextTask ? nextTask.id : '', noNext: n.none === true ? taskText_(n.explanation, TASK_REASON_MAX) : '' } };
+  if (promises) {
+    event.details.promises = promises;
+    const titles = promisedTasks.map(function (task) { return task.title; }).join(' · ');
+    event.summary = taskText_(contactOutcomeLabel_(outcome) + ' · ' + titles + (event.details.summary ? ' · ' + event.details.summary : ''), ACTIVITY_SUMMARY_MAX);
+  }
   const ev = activityRow_(event, nowIso);
   if (!ev.ok) return ev;
   const lock = LockService.getScriptLock();
   if (lock.tryLock(10000) !== true) return lockBusy_('logContact_');
   try {
-    const wrote = activityAppendRow_(ev.row);
+    const wrote = activityAppendRow_(ev.row, true);
+    if (wrote.duplicate) {
+      const original = wrote.original;
+      const originalDetails = JSON.parse(original.detailsJson || '{}');
+      if ((promises || originalDetails.promises) && (String(original.leadId || '') !== leadId ||
+          String(original.patientId || '') !== patientId || String(original.actorName || '') !== actorName ||
+          String(original.houseId || '') !== ev.row.houseId || String(original.personId || '') !== ev.row.personId ||
+          JSON.stringify(originalDetails) !== ev.row.detailsJson)) return taskNo_('changed_promises');
+    }
     const sh = getOrCreateSheet_(TASKS_SHEET, TASK_COLUMNS);
     let completed = null;
     const tid = taskText_(c.taskId, 80);
     if (tid && TASK_ID_RE.test(tid)) {
       const cur = taskReadById_(sh, tid);
-      if (cur.task && taskVisible_(cur.task, actor)) {
+      if (cur.task && cur.task.leadId === leadId && cur.task.patientId === patientId && taskVisible_(cur.task, actor)) {
         if (cur.task.status === 'open') {
           cur.task.status = 'done'; cur.task.doneAt = nowIso; cur.task.doneBy = actorName; cur.task.outcome = contactOutcomeLabel_(outcome);
           cur.task.contactEventId = ev.row.eventId; cur.task.updatedAt = nowIso; cur.task.updatedBy = actorName;
@@ -5125,14 +5185,15 @@ function logContact_(body, actorName, actor) {
         completed = cur.task;
       }
     }
-    let created = null;
-    if (nextTask) {
-      const prior = taskReadById_(sh, nextTask.id);
-      if (prior.task) created = prior.task;
-      else { taskWriteRow_(sh, -1, nextTask); created = nextTask; }
+    const createdTasks = [];
+    for (const pending of nextTask ? [nextTask] : promisedTasks) {
+      const prior = taskReadById_(sh, pending.id);
+      if (!prior.task) taskWriteRow_(sh, -1, pending);
+      createdTasks.push(prior.task || pending);
     }
+    const created = createdTasks[0] || null;
     logAudit_('contact_logged', 'logContact_', patientId || leadId, taskText_(c.withWhom, CONTACT_WITH_MAX), { eventId: ev.row.eventId, outcome: outcome, channel: channel, taskId: tid, nextTaskId: created ? created.id : '', updatedBy: actorName });
-    return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
+    return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, createdTasks: createdTasks, replayed: wrote.duplicate === true };
   } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
 /* ===== Lead flags (CHANGELOG-crm-vered-feedback-1104.md) =====

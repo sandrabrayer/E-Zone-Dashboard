@@ -809,3 +809,11 @@ On `ok:true` the event has been accepted or expressly ignored. Treat a transient
 Staff link the first event by hand. Reusable matching requires a unique primary or referral-contact number on a current open CRM card and no collision in billing, historical lead cards or the resident phone register. Revoking a match in the activity tab affects future linking. A contact-history match grants no permission to send clinical, financial or family updates. The ledger stores event metadata and staff review decisions in the dashboard spreadsheet. Its retention policy and vendor retention must be settled before live traffic; this pilot implements no timed deletion policy.
 
 Before a live cutover, compare a real missed root call, an answered root call and a return call from an extension with the provider console. Compare private messages, linked-device staff replies, group exclusion and repeated delivery acknowledgments. Only a successful provider-side rehearsal can verify handset operation, the on-call acknowledgment, and co-existence with the PayCall after-hours greeting.
+
+### Internal intake follow-up
+
+The CRM contact form can save several family commitments through the existing
+`logContact` action. Deploy the updated Apps Script handler with the matching
+CRM bundle (service worker v160). This workflow needs no provider credentials.
+It writes administrative tasks and one contact event. Use the existing staff
+test path on phone and desktop before enabling the workflow for the team.

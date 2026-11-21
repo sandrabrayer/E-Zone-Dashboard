@@ -2410,6 +2410,11 @@ test('«מכבי» in «לידים» (CHANGELOG-maccabi-leads.md): the Maccabi l
     await page.waitForFunction((s) => document.querySelector(s) && document.querySelector(s).textContent.trim().charAt(0) === '◐' && !document.querySelector(s).disabled, btn, { timeout: 8000 });
     await page.click(btn);
     await page.waitForFunction((s) => document.querySelector(s) && document.querySelector(s).textContent.trim().charAt(0) === '✓' && !document.querySelector(s).disabled, btn, { timeout: 8000 });
+    const missingRequest = page.locator('#crm-maccabi tr[data-maccabi-lead="M1"] details.maccabi-personal');
+    await missingRequest.locator('summary').click();
+    assert.doesNotMatch(await missingRequest.locator('pre').innerText(), /בדיקות דם/);
+    assert.doesNotMatch(decodeURIComponent(await missingRequest.locator('a').getAttribute('href')), /בדיקות דם/);
+    assert.match(await missingRequest.locator('pre').innerText(), /אק״ג/);
     const sent = srv.saves.filter((x) => x.action === 'saveAll');
     assert.equal(sent.length, 2);
     assert.deepEqual(sent[1].prove, { leads: ['M1'] });

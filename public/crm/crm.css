@@ -180,7 +180,12 @@ form.contact fieldset.next { grid-column: 1 / -1; border: 1px solid var(--border
 form.contact fieldset.next legend { font-size: 12px; color: var(--text-muted); padding: 0 4px; }
 form.contact label.radio { flex-direction: row; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
 form.contact .next-extra { flex: 1 1 100%; display: flex; flex-wrap: wrap; gap: 8px 12px; }
-form.contact .next-extra label[hidden] { display: none; }
+form.contact .next-extra [hidden] { display: none; }
+form.contact .intake-promises { width: 100%; }
+form.contact .intake-promise { padding: 6px 0; border-bottom: 1px solid var(--border); }
+form.contact .intake-promise .radio { min-height: 38px; }
+form.contact [data-promise-fields] { display: flex; flex-wrap: wrap; gap: 6px 12px; padding-inline-start: 14px; }
+form.contact [data-promise-fields] label { flex: 1 1 130px; min-width: 0; }
 
 @media (max-width: 899px) {
   .row.task { grid-template-columns: 1fr 1fr; }
@@ -491,3 +496,5 @@ details.act.danger > summary { color: var(--bad); }
 .comm-form input[type=checkbox] { width: auto; }
 .comm-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .comm-review [hidden] { display: none; }
+
+.maccabi-personal[open] { min-width: 185px; max-width: 300px; white-space: normal; }

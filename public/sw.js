@@ -451,7 +451,8 @@
 // leads first in the board columns. (CHANGELOG-crm-leads-view-fixes.md). From v156; monotonic.
 // v157 → v158: family visit confirmation from a saved appointment (CHANGELOG-family-visit-draft.md).
 // v158 → v159: intake contact review on desktop and mobile (CHANGELOG-contact-events.md).
-var CACHE_VERSION = 'v159';
+// v159 → v160: intake promises in the contact form (CHANGELOG-intake-promises.md).
+var CACHE_VERSION = 'v160';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

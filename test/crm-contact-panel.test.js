@@ -18,7 +18,7 @@ test('lists mirror Code.gs: outcomes, channels, kinds (ids and order); the next-
   assert.deepEqual(core.CONTACT_OUTCOMES.map((o) => o.id), Array.from(g.run('CONTACT_OUTCOMES')));
   assert.deepEqual(core.CONTACT_CHANNELS.map((o) => o.id), Array.from(g.run('CONTACT_CHANNELS')));
   assert.deepEqual(core.TASK_KINDS.map((o) => o.id), Array.from(g.run('TASK_KINDS')));
-  assert.deepEqual(core.NEXT_CHOICES.map((n) => n.label), ['מחר', 'בעוד 3 ימים', 'בעוד שבוע', 'בעוד שבועיים', 'בעוד חודש', 'בעוד X ימים', 'תאריך ושעה', 'במהלך שבוע נבחר', 'ללא משימת המשך']);
+  assert.deepEqual(core.NEXT_CHOICES.map((n) => n.label), ['מחר', 'בעוד 3 ימים', 'בעוד שבוע', 'בעוד שבועיים', 'בעוד חודש', 'בעוד X ימים', 'תאריך ושעה', 'במהלך שבוע נבחר', 'התחייבויות למשפחה', 'ללא משימת המשך']);
   assert.ok(!/name="next"[^>]*checked/.test(CRM_SRC), 'no radio is pre-checked — the user chooses (spec §8)');
   assert.ok(!/>בוצע</.test(CRM_SRC), 'no «בוצע» button on a call task — a call closes through the contact log only (data-task-done is drawn for non-call kinds only)');
   assert.match(CRM_SRC, /isCall \? '<button[^']*data-contact-open/, 'a call row offers «תיעוד שיחה», not a completion');
@@ -120,4 +120,16 @@ test('task forms: create (kind, title, date or week), reschedule (date or week; 
   assert.equal(core.taskAccepted({ ok: true, task: { id: 't1' } }, 't1'), ''); assert.equal(core.taskAccepted({ ok: true, task: { id: 't2' } }, 't1'), 'השינוי לא אושר על ידי השרת — רענני');
   assert.equal(core.taskAccepted({ ok: true, task: { id: 'new' } }, ''), '', 'a create has no id to match');
   assert.match(core.taskAccepted({ ok: false, error: 'task_closed', message: 'המשימה כבר סגורה' }), /סגורה/);
+});
+
+test('the contact form sends checked promises only, requires each deadline/owner, and excludes refused or unanswered contact', () => {
+  const v = { when:TODAY,channel:'phone',outcome:'spoke_follow_up',next:'promises',nextPick_catalog:true,
+    nextDue_catalog:TODAY,nextOwner_catalog:'ורד',nextPick_documents:true,nextDue_documents:'2026-11-04',nextOwner_documents:'דנה',
+    nextDue_visit:TODAY,nextOwner_visit:'סנדרה' };
+  assert.deepEqual(core.contactErrors(v,TODAY),{});
+  const body = core.contactBody({leadId:'A'},v,'sub-'+'9'.repeat(32),'',TODAY);
+  assert.deepEqual(body.next,{promises:[{code:'catalog',dueDate:TODAY,assignee:'ורד'},{code:'documents',dueDate:'2026-11-04',assignee:'דנה'}]});
+  for (const change of [{outcome:'stop_contact'},{outcome:'no_answer'},{nextOwner_catalog:''},{nextDue_documents:''},{nextDue_catalog:'2026-10-27'},{nextPick_catalog:false,nextPick_documents:false}]) {
+    assert.ok(core.contactErrors({...v,...change},TODAY).next);
+  }
 });

@@ -82,7 +82,23 @@ test('wiring: saved through the existing lead write; no new column, no new actio
   assert.ok(!/fetch\(|action:/.test(fn), 'no request of its own');
   const view = SRC.slice(SRC.indexOf('function renderMaccabi(c)'), SRC.indexOf('function maccabiToggle('));
   assert.ok(!/'<td>' \+ r\.(name|house|phone)\b/.test(view), 'text cells escaped');
-  assert.match(view, /encodeURIComponent\(MACCABI_MESSAGE\)/);
+  assert.match(view, /encodeURIComponent\(r\.draft\.text\)/);
   assert.match(view, /rel="noopener"/);
   assert.ok(!/maccabi/i.test(GS.slice(GS.indexOf('const LEAD_COLUMNS = ['), GS.indexOf('const IRRELEVANT_LEAD_COLUMNS'))), 'the Leads header is untouched (the closed / removed sheets mirror it)');
+});
+
+test('each Maccabi card prepares only missing documents and suppresses requests for in-transit, received or ambiguous statuses', () => {
+  const note = (statuses) => core.maccabiNoteWith('', statuses);
+  const draft = (value) => core.maccabiView([{id:'s1',source:'מכבי',note:value}]).rows[0].draft;
+  assert.equal(draft('').text, core.MACCABI_MESSAGE);
+  const mixed = draft(note({blood:'in',ecg:'has'}));
+  assert.match(mixed.status,/3/);
+  assert.match(mixed.text,/1\. הפניה/);
+  for (const doc of core.MACCABI_DOCS) assert.equal(mixed.text.includes(doc.label), !['blood','ecg'].includes(doc.id));
+  const all = Object.fromEntries(core.MACCABI_DOCS.map(d => [d.id,'in']));
+  assert.deepEqual(draft(note(all)),{text:'',status:'כל המסמכים התקבלו'});
+  assert.deepEqual(draft(note({...all,blood:'has'})),{text:'',status:'ממתינים למסמכים שכבר בדרך'});
+  for(const ambiguous of ['מסמכי מכבי: סימון ישן',note(all)+'\n'+note(all),'מסמכי מכבי: ✓ בדיקות דם']) {
+    assert.deepEqual(draft(ambiguous),{text:'',status:'נדרשת בדיקת סימוני המסמכים'});
+  }
 });

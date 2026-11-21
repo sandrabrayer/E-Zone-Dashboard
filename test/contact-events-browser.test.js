@@ -59,23 +59,24 @@ let pw;
 try { pw = require('playwright'); } catch (_) {}
 let executable = [process.env.CHROMIUM_PATH, pw && pw.chromium.executablePath(), '/usr/bin/chromium'].find((p) => p && fs.existsSync(p));
 
+async function workstation(browser, s, width, id) {
+  const ctx = await browser.newContext({ viewport: { width, height: 850 }, isMobile: width < 600, hasTouch: width < 600, serviceWorkers: 'block' });
+  await ctx.addCookies([{ name: 'ezone_session', value: personalToken(s.secret, id), url: s.base }]);
+  const page = await ctx.newPage(); page.setDefaultTimeout(10000);
+  await page.goto(s.base + '/?view=crm');
+  const leads = page.locator('#crm-nav button[data-area="leads"]');
+  const burger = page.locator('#crm-burger');
+  if (width < 600 && await burger.isVisible()) await burger.click();
+  await leads.click();
+  return page;
+}
+
 test('staff links a missed call on a 360px phone; a separate desktop session sees the single callback and private WhatsApp receipt', { skip: !pw || !executable }, async () => {
   const d = makeDesk(); d.addLead(); d.receive();
   const s = await serveDesk(d); let browser;
   try {
     browser = await pw.chromium.launch({ executablePath: executable, args: ['--no-sandbox'] });
-    async function workstation(width, id) {
-      const ctx = await browser.newContext({ viewport: { width, height: 850 }, isMobile: width < 600, hasTouch: width < 600, serviceWorkers: 'block' });
-      await ctx.addCookies([{ name: 'ezone_session', value: personalToken(s.secret, id), url: s.base }]);
-      const page = await ctx.newPage(); page.setDefaultTimeout(10000);
-      await page.goto(s.base + '/?view=crm');
-      const leads = page.locator('#crm-nav button[data-area="leads"]');
-      const burger = page.locator('#crm-burger');
-      if (width < 600 && await burger.isVisible()) await burger.click();
-      await leads.click();
-      return page;
-    }
-    const phone = await workstation(360, 'vered'), desktop = await workstation(1280, 'dana');
+    const phone = await workstation(browser, s, 360, 'vered'), desktop = await workstation(browser, s, 1280, 'dana');
     await phone.locator('#crm-communication-review').click();
     const panel = phone.locator('.comm-review');
     await panel.getByRole('button', { name: 'בדיקה ושיוך' }).click();
@@ -118,5 +119,40 @@ test('staff links a missed call on a 360px phone; a separate desktop session see
     assert.match(await review.innerText(), /מספר חסוי/); assert.equal(await review.locator('input[name=remember]').isDisabled(), true);
     await review.locator('[data-comm-dismiss]').click(); await review.locator('[data-comm-dismiss]').click();
     await review.getByText('אין כרגע שיחות או הודעות שממתינות לשיוך.').waitFor(); assert.equal(d.tasks().length, 1);
+  } finally { if (browser) await browser.close(); await s.close(); }
+});
+
+test('a mobile intake conversation with two promises creates separate tasks visible to a desktop staff session', {skip:!pw || !executable}, async () => {
+  const d = makeDesk(); d.addLead();
+  const s = await serveDesk(d); let browser;
+  try {
+    browser = await pw.chromium.launch({executablePath:executable,args:['--no-sandbox']});
+    const phone = await workstation(browser,s,360,'vered');
+    const desktop = await workstation(browser,s,1280,'dana');
+    await phone.locator('[data-open-lead="test-card-a"]').first().click();
+    await phone.locator('#crm-drawer [data-contact-open]').first().click();
+    const f = phone.locator('#crm-drawer form[data-form="contact"]');
+    await f.locator('[name="channel"]').selectOption('whatsapp');
+    await f.locator('[name="outcome"]').selectOption('spoke_follow_up');
+    await f.locator('[name="next"][value="promises"]').check();
+    const date = await f.locator('[name="when"]').inputValue();
+    for (const [code,owner] of [['catalog','ורד'],['documents','דנה']]) {
+      await f.locator('[name="nextPick_'+code+'"]').check();
+      await f.locator('[name="nextDue_'+code+'"]').fill(date);
+      await f.locator('[name="nextOwner_'+code+'"]').selectOption({label:owner});
+    }
+    assert.equal(await f.locator('[name="nextDue_visit"]').isVisible(),false);
+    assert.equal(await phone.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    const save = phone.waitForResponse(async r => r.url().includes('/api/sheets') && r.request().method() === 'POST' && r.request().postDataJSON().action === 'logContact');
+    await f.getByRole('button',{name:'שמירת השיחה'}).click();
+    assert.equal((await (await save).json()).createdTasks.length,2);
+    await desktop.locator('[data-open-lead="test-card-a"]').first().click();
+    await desktop.locator('#crm-drawer [data-tab="tasks"]').click();
+    const pane = desktop.locator('#crm-drawer [data-pane="tasks"]');
+    await pane.getByText('להכין קטלוג מאושר למשפחה',{exact:true}).waitFor();
+    await pane.getByText('לבדוק אילו מסמכים חסרים',{exact:true}).waitFor();
+    assert.equal(d.tasks().length,2);
+    await desktop.locator('#crm-drawer [data-tab="activity"]').click();
+    await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/קטלוג מאושר למשפחה.*מסמכים חסרים/).waitFor();
   } finally { if (browser) await browser.close(); await s.close(); }
 });

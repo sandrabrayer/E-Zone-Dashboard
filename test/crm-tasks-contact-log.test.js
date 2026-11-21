@@ -188,3 +188,62 @@ test('getActivity shows the contact events on the subject (Dana: no money kinds,
   const d = w.call({ action: 'getActivity', leadId: 'L1' }, DANA);
   assert.ok(d.events.some((e) => e.kind === 'contact_logged')); assert.equal(d.scope, 'no_money');
 });
+
+test('one WhatsApp contact records separately owned and dated promises; retries preserve the first plan and later task changes', () => {
+  const w = world();
+  const promises = [
+    { code: 'documents', assignee: 'דנה', dueDate: '2026-11-24' },
+    { code: 'catalog', assignee: 'ורד', dueDate: '2026-11-22' }
+  ];
+  const body = { action: 'logContact', submissionId: SID(78), contact: { leadId: 'L1', channel: 'whatsapp', outcome: 'spoke_follow_up' }, next: { promises } };
+  const result = w.call(body);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.createdTasks.map(t => [t.title,t.assignee,t.dueDate,t.money]), [
+    ['להכין קטלוג מאושר למשפחה','ורד','2026-11-22',''], ['לבדוק אילו מסמכים חסרים','דנה','2026-11-24','']
+  ]);
+  assert.ok(result.createdTasks.every(t => t.contactEventId === result.event.eventId));
+  const stored = w.activity().find(e => e.kind === 'contact_logged');
+  assert.deepEqual(JSON.parse(stored.detailsJson).promises.map(x => x.code), ['catalog','documents']);
+  w.call({ action: 'completeTask', id: result.createdTasks[0].id, outcome: 'העותק לבדיקה' });
+  const retry = w.call({ ...body, next: { promises: promises.slice().reverse() } });
+  assert.equal(retry.replayed, true);
+  assert.equal(retry.createdTasks[0].status, 'done');
+  assert.equal(w.tasks().length, 2);
+  assert.equal(w.activity().filter(e => e.kind === 'contact_logged').length, 1);
+  for (const alter of [
+    { ...body, next: { promises: [promises[0]] } }, { ...body, contact: { ...body.contact, leadId: 'L2' } },
+    { ...body, next: { days: 2 } }, { ...body, next: { promises: [{ ...promises[0], assignee: 'סנדרה' }, promises[1]] } }
+  ]) assert.equal(w.call(alter).error, 'changed_promises');
+  assert.equal(w.tasks().length, 2);
+});
+
+test('invalid plans, missing owners or consent withdrawal cannot partly record a contact or complete a task', () => {
+  const w = world();
+  const task = w.call({ action: 'createTask', submissionId: SID(80), task: {kind:'call',leadId:'L1',title:'חזרה'} }).task;
+  const valid = {code:'status',assignee:'ורד',dueDate:'2026-12-01'};
+  const contact = {leadId:'L1',channel:'phone',outcome:'call_back_later',taskId:task.id};
+  const send = (next, override = {}) => w.call({ action:'logContact', submissionId:SID(81), contact: {...contact,...override}, next });
+  for (const bad of [[], [valid,valid], [valid,{...valid,code:'charge'}], [{...valid, assignee:''}], [{...valid, dueDate:'2026-02-31'}], [{...valid, assignee:'שירן'}]]) {
+    assert.equal(send({promises:bad}).error,'bad_promises');
+  }
+  assert.equal(send({promises:[valid],days:2}).error,'bad_promises');
+  for (const outcome of ['stop_contact','no_answer','no_interest_now','bad_contact_details']) assert.equal(send({promises:[valid]},{outcome}).error,'bad_promises');
+  assert.equal(w.tasks().length,1); assert.equal(w.tasks()[0].status,'open');
+  assert.equal(w.activity().filter(e => e.kind === 'contact_logged').length,0);
+  const other = send({promises:[valid]},{leadId:'OTHER'});
+  assert.equal(other.ok,true); assert.equal(other.completed,null);
+  assert.equal(w.tasks().find(t => t.id === task.id).status,'open');
+});
+
+test('retry after interruption recovers a missing promised task from the same submission', () => {
+  const w = world();
+  const body = { action:'logContact', submissionId:SID(84), contact:{leadId:'L1',outcome:'spoke_follow_up'}, next:{promises:[
+    {code:'catalog',assignee:'ורד',dueDate:'2026-12-03'}, {code:'documents',assignee:'דנה',dueDate:'2026-12-04'}
+  ]}};
+  w.g.run("var originalPromiseWrite = taskWriteRow_; taskWriteRow_ = function(sh, position, task) { if (task.id.endsWith('-documents')) throw Error('simulated interruption'); return originalPromiseWrite(sh, position, task); }");
+  try { w.call(body); } catch (_) {}
+  assert.equal(w.tasks().length,1);
+  w.g.run('taskWriteRow_ = originalPromiseWrite;');
+  const recovered = w.call(body); assert.equal(recovered.replayed,true); assert.equal(recovered.createdTasks.length,2);
+  assert.equal(w.tasks().length,2); assert.equal(w.activity().filter(e=>e.kind==='contact_logged').length,1);
+});

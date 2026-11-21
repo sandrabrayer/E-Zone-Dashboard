@@ -92,9 +92,13 @@
   const MACCABI_STATES = [{ id: '', mark: '✗', label: 'חסר' }, { id: 'has', mark: '◐', label: 'אצל המטופל/ת — מעביר/ה' }, { id: 'in', mark: '✓', label: 'התקבל' }];
   const MACCABI_LINE = 'מסמכי מכבי:';
   const MACCABI_EMAIL = 'maccabi@ezone-house.co.il';
-  const MACCABI_MESSAGE = 'שלום, לצורך קבלת טיפול דרך קופ״ח מכבי יש לשלוח את המסמכים הבאים:\n'
-    + MACCABI_DOCS.map(function (d, i) { return (i + 1) + '. ' + d.label; }).join('\n')
-    + '\n\nיש לשלוח למייל ' + MACCABI_EMAIL + ' — סרוק וקריא 🙏';
+  function maccabiMessage(items) {
+    if (!items.length) return '';
+    return 'שלום, לצורך קבלת טיפול דרך קופ״ח מכבי יש לשלוח את המסמכים הבאים:\n'
+      + items.map(function (d, i) { return (i + 1) + '. ' + d.label; }).join('\n')
+      + '\n\nיש לשלוח למייל ' + MACCABI_EMAIL + ' — סרוק וקריא 🙏';
+  }
+  const MACCABI_MESSAGE = maccabiMessage(MACCABI_DOCS);
   function maccabiLineOf(note) {
     return s(note).split(/\r?\n/).filter(function (ln) { return ln.trim().indexOf(MACCABI_LINE) === 0; })[0] || '';
   }
@@ -112,6 +116,29 @@
       out[d.id] = st ? st.id : '';
     });
     return out;
+  }
+  // The staff reference stays complete. The draft for a particular family uses only
+  // known missing items. An ambiguous legacy mark or duplicate needs staff review.
+  function maccabiDocumentDraft(note, docs) {
+    const lines = s(note).split(/\r?\n/).filter(function (line) { return line.trim().indexOf(MACCABI_LINE) === 0; });
+    const review = { text: '', status: 'נדרשת בדיקת סימוני המסמכים' };
+    if (lines.length > 1) return review;
+    if (lines.length) {
+      const parts = lines[0].trim().slice(MACCABI_LINE.length).split('|');
+      const seen = new Set();
+      for (const part of parts) {
+        const item = part.trim();
+        const doc = MACCABI_DOCS.find(function (d) { return item.slice(1).trim() === d.short; });
+        if (!doc || seen.has(doc.id) || !MACCABI_STATES.some(function (st) { return st.mark === item.charAt(0); })) return review;
+        seen.add(doc.id);
+      }
+      // Old partial checklists can contain free-form status information outside the list.
+      if (seen.size !== MACCABI_DOCS.length) return review;
+    }
+    const missing = MACCABI_DOCS.filter(function (d) { return !docs[d.id]; });
+    if (missing.length) return { text: maccabiMessage(missing), status: 'בקשת מסמכים (' + missing.length + ')' };
+    const pending = MACCABI_DOCS.some(function (d) { return docs[d.id] === 'has'; });
+    return { text: '', status: pending ? 'ממתינים למסמכים שכבר בדרך' : 'כל המסמכים התקבלו' };
   }
   /* The note with the list written back: its line replaced in place, or added last. */
   function maccabiNoteWith(note, docs) {
@@ -161,7 +188,7 @@
     const rows = (Array.isArray(leads) ? leads : []).filter(isMaccabiLead).filter(function (l) { return !needle || (s(l.name) + ' ' + s(l.phone) + ' ' + houseName(l.house)).toLowerCase().indexOf(needle) >= 0; }).map(function (l) {
       const docs = maccabiDocsOf(l.note);
       const got = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'in'; }).length, onWay = MACCABI_DOCS.filter(function (d) { return docs[d.id] === 'has'; }).length;
-      return { id: s(l.id), name: s(l.name), phone: s(l.phone), house: houseName(l.house), stage: s(l.stage), assignedTo: s(l.assignedTo), created: s(l.created), docs: docs, got: got, onWay: onWay,
+      return { id: s(l.id), name: s(l.name), phone: s(l.phone), house: houseName(l.house), stage: s(l.stage), assignedTo: s(l.assignedTo), created: s(l.created), docs: docs, draft: maccabiDocumentDraft(l.note, docs), got: got, onWay: onWay,
         missing: MACCABI_DOCS.length - got - onWay, complete: got === MACCABI_DOCS.length };
     }).sort(function (a, b) { return (a.complete - b.complete) || (a.got - b.got) || a.name.localeCompare(b.name, 'he'); });
     return { rows: rows, count: rows.length, complete: rows.filter(function (r) { return r.complete; }).length, waiting: rows.filter(function (r) { return !r.complete; }).length };
@@ -2940,9 +2967,15 @@
     { id: 'meeting_set', label: 'נקבעה פגישה' }, { id: 'no_interest_now', label: 'אין עניין כרגע' },
     { id: 'bad_contact_details', label: 'פרטי הקשר אינם תקינים' }, { id: 'stop_contact', label: 'התבקשה הפסקת פניות' }];
   const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
+  const INTAKE_PROMISES = [
+    { code: 'catalog', title: 'להכין קטלוג מאושר למשפחה' },
+    { code: 'documents', title: 'לבדוק אילו מסמכים חסרים' },
+    { code: 'visit', title: 'לתאם ביקור עם המשפחה' },
+    { code: 'status', title: 'לחזור למשפחה עם עדכון סטטוס' }
+  ];
   /* «קשר הבא»: no automatic default — the user picks (spec §8). */
   const NEXT_CHOICES = [{ id: 'd1', label: 'מחר', days: 1 }, { id: 'd3', label: 'בעוד 3 ימים', days: 3 }, { id: 'd7', label: 'בעוד שבוע', days: 7 }, { id: 'd14', label: 'בעוד שבועיים', days: 14 },
-    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'none', label: 'ללא משימת המשך' }];
+    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'promises', label: 'התחייבויות למשפחה' }, { id: 'none', label: 'ללא משימת המשך' }];
   const TASK_KINDS = [{ id: 'call', label: 'שיחה' }, { id: 'meeting', label: 'פגישה' }, { id: 'collection', label: 'גבייה', money: true }, { id: 'admission', label: 'קליטה' },
     { id: 'discharge', label: 'שחרור' }, { id: 'continuity', label: 'המשך טיפול' }, { id: 'review', label: 'בירור' }, { id: 'other', label: 'אחר' }];
   const TASK_KIND_LABELS = {}; TASK_KINDS.forEach(function (k) { TASK_KIND_LABELS[k.id] = k.label; });
@@ -2958,8 +2991,17 @@
     if (c.id === 'days') { const n = Number(v.days); if (!(n >= 1 && n <= 365 && n === Math.floor(n))) return null; const d = addDays(today, n); return { dueDate: d, dueTime: '', text: 'בעוד ' + n + ' ימים — ' + fmtDate(d) + ' (' + DAY_NAMES[weekdayOf(d)] + ')' }; }
     if (c.id === 'date') { if (!isoDateOk(v.date) || v.date < today) return null; const t = s(v.time); if (t && !timeOk(t)) return null; return { dueDate: v.date, dueTime: t, text: fmtDate(v.date) + (t ? ' ' + t : '') + ' (' + DAY_NAMES[weekdayOf(v.date)] + ')' }; }
     if (c.id === 'week') { if (!isoDateOk(v.weekStart)) return null; const ws = weekStart(v.weekStart), we = addDays(ws, 6); if (we < today) return null; return { windowStart: ws, windowEnd: we, text: 'במהלך השבוע ' + fmtDate(ws) + ' – ' + fmtDate(we) }; }
+    if (c.id === 'promises') {
+      const chosen = INTAKE_PROMISES.filter(function (item) { return v['nextPick_' + item.code] === true; });
+      const promises = chosen.map(function (item) { return { code: item.code, dueDate: s(v['nextDue_' + item.code]), assignee: s(v['nextOwner_' + item.code]) }; });
+      if (!promises.length || promises.some(function (item) { return !isoDateOk(item.dueDate) || item.dueDate < today || ASSIGNEES.indexOf(item.assignee) < 0; })) return null;
+      return { promises: promises, text: 'התחייבויות לשמירה: ' + promises.length };
+    }
     const ex = s(v.explanation);
     return ex.length >= 2 ? { none: true, explanation: ex, text: 'ללא משימת המשך — ' + ex } : null;
+  }
+  function contactNextPlan(v, today) {
+    return nextPlan(v.next, v.next === 'promises' ? v : { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today);
   }
   /* The contact form → errors by field. v = { when, time, withWhom, channel, reason, outcome, summary, next, nextDays, nextDate, nextTime, nextWeek, nextExplanation }. */
   function contactErrors(v, today) {
@@ -2972,18 +3014,23 @@
     if (s(v.summary).length > 1000) e.summary = 'עד 1000 תווים';
     if (s(v.withWhom).length > 80) e.withWhom = 'עד 80 תווים';
     if (!v.next) e.next = 'בחרי מה הלאה — אין ברירת מחדל';
-    else if (!nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today)) {
+    else if (v.next === 'promises' && ['spoke_follow_up', 'call_back_later', 'awaiting_decision', 'meeting_set'].indexOf(v.outcome) < 0) {
+      e.next = 'אפשר לשמור התחייבויות שסוכמו אחרי קשר עם המשפחה.';
+    } else if (v.next === 'promises' && !contactNextPlan(v, today)) {
+      e.next = 'בחרי לפחות התחייבות אחת ומלאי אחראי ותאריך לכל התחייבות שסומנה.';
+    } else if (!contactNextPlan(v, today)) {
       e.next = v.next === 'none' ? 'ללא משימת המשך — חובה להסביר (2 תווים לפחות)' : v.next === 'days' ? 'מספר ימים בין 1 ל-365' : v.next === 'week' ? 'בחרי שבוע (מהיום והלאה)' : 'תאריך מהיום והלאה';
     }
     return e;
   }
   /* The logContact body (Stage 1a contract). subject = { leadId } | { patientId }. */
   function contactBody(subject, v, sid, taskId, today, assignee) {
-    const plan = nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, today);
+    const plan = contactNextPlan(v, today);
     // local wall-clock → the UTC instant the Activity sheet stores (no time → noon, so the day never shifts)
     const at = new Date(s(v.when) + 'T' + (timeOk(v.time) ? s(v.time) : '12:00') + ':00');
     const contact = Object.assign({}, subject, { occurredAt: isNaN(at.getTime()) ? '' : at.toISOString(), withWhom: s(v.withWhom), channel: s(v.channel), reason: s(v.reason), outcome: s(v.outcome), summary: s(v.summary) });
     if (taskId) contact.taskId = taskId;
+    if (plan.promises) return { action: 'logContact', submissionId: sid, contact: contact, next: { promises: plan.promises } };
     const next = plan.none ? { none: true, explanation: plan.explanation } : plan.windowStart ? { windowStart: plan.windowStart, windowEnd: plan.windowEnd } : { dueDate: plan.dueDate, dueTime: plan.dueTime || '' };
     if (!next.none) { next.title = s(v.nextTitle) || ('לחזור — ' + contactOutcomeLabel(v.outcome)); if (s(assignee)) next.assignee = s(assignee); if (s(v.summary)) next.reason = s(v.summary).slice(0, 300); }
     return { action: 'logContact', submissionId: sid, contact: contact, next: next };
@@ -4125,16 +4172,19 @@
     function renderMaccabi(c) {
       const v = maccabiView(c.leads, state.filters.q);
       let html = '<div class="group-title" id="crm-maccabi-title">לידים של מכבי ' + chip(v.waiting ? 'today' : 'ok', v.count + ' לידים · ' + v.complete + ' עם כל המסמכים · ' + v.waiting + ' חסרים') + '</div>'
-        + '<div class="toolbar"><button type="button" class="btn primary" id="crm-new-maccabi">+ ליד מכבי</button><button type="button" class="btn" data-maccabi-copy>העתק את ההודעה למשפחה</button>'
+        + '<div class="toolbar"><button type="button" class="btn primary" id="crm-new-maccabi">+ ליד מכבי</button><button type="button" class="btn" data-maccabi-copy>העתקת הרשימה הכללית</button>'
         + '<a class="btn" href="mailto:' + esc(MACCABI_EMAIL) + '">' + esc(MACCABI_EMAIL) + '</a></div>'
-        + '<details class="maccabi-msg" id="crm-maccabi-msg"><summary>ההודעה שנשלחת — המסמכים הנדרשים</summary><pre>' + esc(MACCABI_MESSAGE) + '</pre></details>'
+        + '<details class="maccabi-msg" id="crm-maccabi-msg"><summary>רשימת המסמכים הכללית לצוות</summary><pre>' + esc(MACCABI_MESSAGE) + '</pre></details>'
         + '<p class="na">לחיצה על מסמך מחליפה מצב: ✗ חסר → ◐ אצל המטופל/ת (מעביר/ה) → ✓ התקבל. נשמר מיד, בשורת «מסמכי מכבי» בהערות של הליד. ליד נכנס לרשימה כשהמקור או השם שלו כולל «מכבי».</p>';
       if (!v.rows.length) return html + '<p class="na" id="crm-maccabi-none">אין לידים של מכבי' + (s(state.filters.q) ? ' בחיפוש הזה' : '') + '. «+ ליד מכבי» פותח ליד חדש עם המקור «מכבי».</p>';
       html += '<div class="tbl-wrap"><table class="tbl" id="crm-maccabi"><thead><tr><th>ליד</th><th>הודעה</th><th>מצב</th>' + MACCABI_DOCS.map(function (d) { return '<th title="' + esc(d.label) + '">' + esc(d.short) + '</th>'; }).join('') + '<th>בית</th><th>שלב</th></tr></thead><tbody>'
         + v.rows.map(function (r) {
           const wa = waDigits(r.phone);
           return '<tr data-maccabi-lead="' + esc(r.id) + '"><td class="link" data-open-lead="' + esc(r.id) + '">' + esc(r.name) + '</td>'
-            + '<td>' + (wa ? '<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/' + esc(wa) + '?text=' + encodeURIComponent(MACCABI_MESSAGE) + '">וואטסאפ</a>' : '<span class="na">אין טלפון</span>') + '</td>'
+            + '<td>' + (r.draft.text ? '<details class="maccabi-msg maccabi-personal"><summary>' + esc(r.draft.status) + '</summary>'
+              + '<p class="na">לפני מסירה ודאי שהרשימה עדכנית ושאיש הקשר מורשה לקבלה.</p><pre>' + esc(r.draft.text) + '</pre>'
+              + (wa ? '<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/' + esc(wa) + '?text=' + encodeURIComponent(r.draft.text) + '">פתיחת טיוטה בוואטסאפ</a>' : '<span class="na">אין טלפון</span>')
+              + '</details>' : '<span class="na">' + esc(r.draft.status) + '</span>') + '</td>'
             + '<td>' + chip(r.complete ? 'ok' : r.got + r.onWay ? 'today' : 'late', r.got + '/' + MACCABI_DOCS.length + (r.onWay ? ' · ' + r.onWay + ' בדרך' : '')) + '</td>'
             + MACCABI_DOCS.map(function (d) {
               const st = MACCABI_STATES.filter(function (m) { return m.id === r.docs[d.id]; })[0] || MACCABI_STATES[0];
@@ -6972,6 +7022,13 @@
         + '<div class="next-extra"><label data-next-for="days">מספר ימים <input type="number" name="nextDays" min="1" max="365"></label>'
         + '<label data-next-for="date">תאריך <input type="date" name="nextDate" min="' + esc(state.today) + '"></label><label data-next-for="date">שעה <input type="time" name="nextTime"></label>'
         + '<label data-next-for="week">יום בשבוע המבוקש <input type="date" name="nextWeek" min="' + esc(state.today) + '"></label>'
+        + '<div class="intake-promises" data-next-for="promises" hidden><p>סמני מה סוכם. לכל התחייבות תיפתח משימה בכרטיס וב״היום שלי״.</p>'
+        + INTAKE_PROMISES.map(function (item) {
+          const who = ASSIGNEES.indexOf(state.me && state.me.user) >= 0 ? state.me.user : '';
+          return '<div class="intake-promise"><label class="radio"><input type="checkbox" name="nextPick_' + item.code + '"> ' + esc(item.title) + '</label>'
+            + '<div data-promise-fields="' + item.code + '" hidden><label>אחראי <select name="nextOwner_' + item.code + '">' + opts(ASSIGNEES, who, true) + '</select></label>'
+            + '<label>מועד מוסכם <input type="date" name="nextDue_' + item.code + '" min="' + esc(state.today) + '"></label></div></div>';
+        }).join('') + '</div>'
         + '<label data-next-for="none" class="wide">למה אין המשך *<input type="text" name="nextExplanation" maxlength="300"></label>'
         + '<label data-next-for="task" class="wide">כותרת המשימה <input type="text" name="nextTitle" maxlength="120" placeholder="לחזור — (ברירת מחדל לפי התוצאה)"></label>'
         + '<label data-next-for="task">אחראי <select name="nextAssignee">' + opts(ASSIGNEES, task && task.assignee ? task.assignee : (state.me && state.me.user), true) + '</select></label></div>'
@@ -6988,11 +7045,12 @@
         tl.innerHTML = r.events.map(function (e) { return '<li><div class="t">' + esc(whenLocal(e.occurredAt)) + ' · ' + esc(e.actorName || e.source || '') + '</div><div>' + esc(e.summary || e.kind) + '</div></li>'; }).join('');
       });
     }
-    function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.value; }); return v; }
+    function contactValues(f) { const v = {}; Array.prototype.forEach.call(f.elements, function (el) { if (!el.name) return; if (el.type === 'radio') { if (el.checked) v[el.name] = el.value; else if (!(el.name in v)) v[el.name] = v[el.name] || ''; } else v[el.name] = el.type === 'checkbox' ? el.checked : el.value; }); return v; }
     function refreshNextPreview(f) {
       const v = contactValues(f);
-      const plan = v.next ? nextPlan(v.next, { days: v.nextDays, date: v.nextDate, time: v.nextTime, weekStart: v.nextWeek, explanation: v.nextExplanation }, state.today) : null;
-      doc.querySelectorAll('#crm-drawer [data-next-for]').forEach(function (el) { const k = el.dataset.nextFor; el.hidden = !(k === v.next || (k === 'task' && v.next && v.next !== 'none')); });
+      const plan = v.next ? contactNextPlan(v, state.today) : null;
+      doc.querySelectorAll('#crm-drawer [data-next-for]').forEach(function (el) { const k = el.dataset.nextFor; el.hidden = !(k === v.next || (k === 'task' && v.next && v.next !== 'none' && v.next !== 'promises')); });
+      f.querySelectorAll('[data-promise-fields]').forEach(function (el) { el.hidden = v['nextPick_' + el.dataset.promiseFields] !== true; });
       const p = $('#crm-next-preview'); if (p) p.textContent = plan ? plan.text : (v.next ? 'השלימי את הפרטים' : 'בחרי מועד — התאריך בפועל יוצג כאן.');
     }
     /* Save = ONE logContact. A failure keeps the text and allows a retry with the SAME submission id (idempotent server-side); nothing is marked done before the server confirms. */
@@ -7011,10 +7069,11 @@
         .then(function (r) { return r.json().catch(function () { return { ok: false, error: 'bad_json' }; }); })
         .then(function (res) {
           state.saving = false; clearBusy();
-          const why = contactAccepted(res);
+          let why = contactAccepted(res);
+          if (!why && body.next.promises && (!Array.isArray(res.createdTasks) || res.createdTasks.length !== body.next.promises.length)) why = 'טרם התקבל אישור לכל ההתחייבויות. נסי שוב.';
           if (why) { showReportIssues(f, [], why); if (st) st.textContent = ''; toast(why, true); return false; }
           const back = state.contact; state.contact = null;
-          toast('השיחה נשמרה ✓' + (res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
+          toast('השיחה נשמרה ✓' + (body.next.promises ? ' · משימות שנשמרו: ' + res.createdTasks.length : res.created ? ' · משימת המשך ' + taskWhen(res.created) : ''));
           if (state.area === 'triage') { triageDecided(); closeDrawer(); return reloadTasks().then(function () { return true; }); }
           state.drawer = { kind: back.kind, id: back.id, tab: 'tasks' };
           return reloadTasks().then(function () { openDrawer(back.kind, back.id, true); return true; });
@@ -7126,7 +7185,7 @@
       }
       if (t.dataset.maccabiDoc) return maccabiToggle(t.dataset.lead, t.dataset.maccabiDoc);
       if (t.dataset.maccabiCopy !== undefined) {
-        const done = function (ok) { toast(ok ? 'ההודעה הועתקה — הדביקי בוואטסאפ' : 'ההעתקה נחסמה — סמני את הטקסט והעתיקי ידנית', !ok); if (!ok) { const d = $('#crm-maccabi-msg'); if (d) d.open = true; } };
+        const done = function (ok) { toast(ok ? 'רשימת המסמכים הכללית הועתקה' : 'ההעתקה נחסמה — סמני את הטקסט והעתיקי ידנית', !ok); if (!ok) { const d = $('#crm-maccabi-msg'); if (d) d.open = true; } };
         try { win.navigator.clipboard.writeText(MACCABI_MESSAGE).then(function () { done(true); }, function () { done(false); }); } catch (_) { done(false); }
         return;
       }
