@@ -304,6 +304,8 @@ test('B: Vered saves a no-show callback and scheduled next task; source echoes p
     const row = page.locator('#crm-main .row.work:not(.h)', { hasText: 'מטופל היעדרות בדיקה' }).first();
     await row.locator('button:text-is("תיעוד שיחה")').click();
     const form = '#crm-drawer form[data-form="contact"]';
+    await page.waitForSelector(form);
+    if (!(await page.$(form + ' input[name="direction"]:checked'))) await page.check(form + ' input[name="direction"][value="out"]');   // the kind must be chosen (CHANGELOG-crm-contact-three-states.md)
     await page.selectOption(form + ' select[name="outcome"]', 'call_back_later');
     await page.fill(form + ' textarea[name="summary"]', 'שיחת המשך בעקבות ביקור שלא התקיים');
     await page.check(form + ' input[name="next"][value="d3"]');
@@ -311,8 +313,8 @@ test('B: Vered saves a no-show callback and scheduled next task; source echoes p
     await page.waitForFunction(() => {
       const dr = document.querySelector('#crm-drawer');
       return dr && dr.getAttribute('aria-hidden') === 'false'
-        && dr.querySelector('[data-pane="tasks"]:not([hidden])')
-        && dr.textContent.includes('שיחת המשך בעקבות ביקור שלא התקיים');
+        && dr.querySelector('[data-pane="overview"]:not([hidden])')   // back on the overview since CHANGELOG-crm-contact-three-states.md
+        && dr.querySelector('#crm-next-steps') && dr.querySelector('#crm-next-steps').textContent.includes('שיחת המשך בעקבות ביקור שלא התקיים');
     }, null, { timeout: 7000 });
 
     const writes = srv.posts.filter(p => p.action === 'logContact');

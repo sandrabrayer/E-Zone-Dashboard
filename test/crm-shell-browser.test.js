@@ -134,11 +134,12 @@ async function boot(options = {}) {
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (parsed.action === 'saveCredit') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'deletePatientRow', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
-      if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
+      if (['logContact', 'voidContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? (activityAnswer ? activityAnswer(parsed) : ACTIVITY)
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
+        : parsed.action === 'voidContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, voided: { eventId: parsed.eventId }, cancelledTask: null, replayed: false })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
         : parsed.action === 'logLeadFlag' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, flag: Object.assign({ at: new Date().toISOString(), actorName: 'ורד' }, parsed.flag) })
         : parsed.action === 'debtAging' ? (options.debt || DEBT) : parsed.action === 'getPayments' ? PAYMENTS : parsed.action === 'getCredits' ? creditsLedger
@@ -201,7 +202,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
   try {
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
     assert.equal(await page.getAttribute('html', 'dir'), 'rtl');
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI', 'היסטוריה חודשית', 'משך שהייה'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום', 'בקרת עבודה', 'לידים', 'מטופלים', 'יומן', 'תפוסה', 'גבייה', 'KPI', 'היסטוריה חודשית', 'משך שהייה'], 'grouped nav (spec §3; «פניות» → «לידים» 04/11/2026; «בקרת עבודה» next to «היום שלי» + «KPI» 05/11/2026)');
     assert.deepEqual(await page.$$eval('#crm-nav .nav-group', (els) => els.map((e) => e.textContent)), ['לידים ומטופלים', 'פגישות ויומן', 'בתים והמשך טיפול', 'כספים', 'דוחות והגדרות']);
     assert.equal(await page.$eval('body', (b) => getComputedStyle(b).backgroundColor), 'rgb(230, 236, 242)', 'light theme (contrast pass)');
     assert.ok(await page.isVisible('#crm-menu'));
@@ -277,7 +278,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     assert.match(await page.textContent('#crm-main'), /פגישות שעברו ללא דיווח/);
     // every control number opens its list (clickable KPIs)
     await page.click('.kpi.acc-unseen');
-    assert.equal(await page.textContent('#crm-title'), 'היום שלי');
+    assert.equal(await page.textContent('#crm-title'), 'היום');
     assert.match(await page.textContent('[data-control-section="unseen"]'), /רון אביב/, 'the exact unread-report list');
     await page.click('#crm-nav button[data-area="control"]');
     await page.click('.kpi.acc-noContact');
@@ -327,7 +328,7 @@ test('CRM shell (Ortal, controller): only היום שלי / גבייה / בקר�
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
   try {
     const { page, errors } = await open(browser, srv.port, 'ortal', 1366);
-    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום שלי', 'בקרת עבודה', 'גבייה']);
+    assert.deepEqual(await page.$$eval('#crm-nav button span:first-child', (els) => els.map((e) => { const c = e.cloneNode(true); const i = c.querySelector('.ic'); if (i) i.remove(); return c.textContent.trim(); })), ['היום', 'בקרת עבודה', 'גבייה']);
     // she lands on «גבייה» (CHANGELOG-ortal-crm-default.md); «היום שלי» is one tap away
     await page.waitForSelector('#crm-bill-overview', { timeout: 8000 });
     assert.deepEqual(await page.$$eval('#crm-bill-nav [data-bill-tab]', (els) => els.map((e) => e.dataset.billTab)), ['overview', 'due', 'forecast', 'debts', 'receipts', 'refunds', 'unlinked', 'anomalies'], 'her sections — no cleanup tool');
@@ -1493,6 +1494,7 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
     assert.match(head, /תיעוד שיחה · אבי לוי/); assert.match(head, /0501111111/); assert.match(head, /קישור חיוג אינו תיעוד/);
     await page.waitForFunction(() => /הליד נוצר/.test(document.querySelector('#crm-tl').textContent), null, { timeout: 5000 });
     assert.equal(await page.$$eval('form[data-form="contact"] input[name="next"]:checked', (els) => els.length), 0, 'no default follow-up');
+    assert.equal(await page.inputValue('form[data-form="contact"] input[name="direction"]:checked'), 'out', 'a planned call task opens as «שיחה יוצאת»');
     assert.equal(await page.inputValue('form[data-form="contact"] input[name="reason"]'), 'לחזור למשפחה');
     // save without outcome / next → client errors, nothing posted
     await page.click('form[data-form="contact"] button[type="submit"]');
@@ -1511,10 +1513,13 @@ test('Stage 1c (Vered): «שיחות לביצוע» on היום שלי from getT
     await page.waitForFunction(() => /עסוקה/.test(document.querySelector('form[data-form="contact"] [data-err="_form"]').textContent), null, { timeout: 5000 });
     assert.equal(await page.inputValue('form[data-form="contact"] textarea[name="summary"]'), 'ביקשו שנחזור אחרי החג', 'the text survives a failed save');
     assert.equal(srv.saves.length, 1);
-    // retry → accepted, ONE logContact with the same submission id, the task id, the follow-up; back to the card on «משימות»
+    // retry → accepted, ONE logContact with the same submission id, the task id, the follow-up; back to the card's overview
+    // (the record + «מה הלאה», CHANGELOG-crm-contact-three-states.md) — «משימות» is one click away
     saveAnswer = null;
     await page.click('form[data-form="contact"] button[type="submit"]');
-    await page.waitForFunction(() => document.querySelector('#crm-drawer [data-tab="tasks"]') && document.querySelector('#crm-drawer [data-tab="tasks"]').getAttribute('aria-selected') === 'true', null, { timeout: 5000 });
+    await page.waitForFunction(() => !document.querySelector('form[data-form="contact"]') && document.querySelector('#crm-drawer [data-tab="overview"]') && document.querySelector('#crm-drawer [data-tab="overview"]').getAttribute('aria-selected') === 'true', null, { timeout: 5000 });
+    assert.match(await page.textContent('#crm-next-steps'), /מה הלאה[\s\S]*לחזור למשפחה/, 'the open follow-up is spelled out on the overview');
+    await page.click('#crm-drawer [data-tab="tasks"]');
     const posted = srv.saves.filter((x) => x.action === 'logContact');
     assert.equal(posted.length, 2); assert.equal(posted[0].submissionId, posted[1].submissionId, 'the retry reuses the submission id (idempotent)');
     const b = posted[1];
@@ -2979,72 +2984,117 @@ test('«זימון למנהל/ת» when a meeting is scheduled (CHANGELOG-crm-me
   } finally { DATA.managerPhones = keepPhones; saveAnswer = null; await browser.close(); srv.close(); }
 });
 
-test('«פנו אלינו» + the lead card layout (Vered, CHANGELOG-crm-incoming-contact.md): details come before the actions, a chosen manager is not «נפגש/ת עם»; the documented contacts show on the overview with their direction; an incoming contact is saved through ONE logContact with direction "in"; «לא נדרש המשך» needs no explanation and returns to the overview; the two header buttons fit a phone', { skip: skip && 'playwright/chromium missing' }, async () => {
+test('the contact log\'s three kinds, «מה הלאה», «ביטול תיעוד» and the lead card layout (Vered; CHANGELOG-crm-incoming-contact.md, CHANGELOG-crm-contact-three-states.md): details before actions; the kind must be chosen (שיחה יוצאת / שיחה נכנסת / תיעוד שיחה); ONE logContact carries it; a follow-up is spelled out as what · when · who; a record entered twice is voided with a reason through ONE voidContact; «היום» is the team page', { skip: skip && 'playwright/chromium missing' }, async () => {
   const srv = await boot();
   const browser = await playwright.chromium.launch({ executablePath: chromiumPath });
+  const cid = (n) => 'contact:sub-' + String(n).padStart(32, '0');
+  let voided = false;
   try {
-    activityAnswer = () => ({ ok: true, scope: 'full', total: 3, events: [
-      { eventId: 'c2', occurredAt: daysAgo(1) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'ורד', summary: 'פנייה נכנסת · התקיימה שיחה ונדרש המשך · <b>שאל</b> על עלויות', details: { direction: 'in', outcome: 'spoke_follow_up', summary: '<b>שאל</b> על עלויות' } },
-      { eventId: 'c1', occurredAt: daysAgo(4) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'דנה', summary: 'לא היה מענה', details: { outcome: 'no_answer' } },
-      { eventId: 'x', occurredAt: daysAgo(5) + 'T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }] });
+    activityAnswer = () => ({ ok: true, scope: 'full', total: 4, events: [
+      { eventId: cid(3), occurredAt: daysAgo(1) + 'T08:05:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'סנדרה', summary: 'ניסוח ישן', details: { direction: 'in', outcome: 'spoke_follow_up', summary: 'לשלוח תמונות', nextTaskId: 'task-' + '1'.repeat(32) } },
+      { eventId: cid(2), occurredAt: daysAgo(1) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'ורד', summary: 'ניסוח ישן', details: { direction: 'in', outcome: 'spoke_follow_up', summary: '<b>שאל</b> על עלויות' } },
+      { eventId: cid(1), occurredAt: daysAgo(4) + 'T08:00:00.000Z', kind: 'contact_logged', source: 'manual', actorName: 'דנה', summary: 'לא היה מענה', details: { outcome: 'no_answer' } },
+      { eventId: 'x', occurredAt: daysAgo(5) + 'T09:00:00.000Z', kind: 'lead_created', source: 'system:x', actorName: 'ורד', summary: 'הליד נוצר', details: {} }]
+      .concat(voided ? [{ eventId: 'void:' + cid(3), occurredAt: new Date().toISOString(), kind: 'contact_voided', source: 'manual', actorName: 'ורד', summary: 'תיעוד שיחה בוטל · הוזן פעמיים', supersedesEventId: cid(3), details: { reason: 'הוזן פעמיים' } }] : []) });
+    saveAnswer = (p) => p.action === 'voidContact' ? ((voided = true), { ok: true, voided: { eventId: p.eventId }, cancelledTask: { id: 'task-' + '1'.repeat(32) }, replayed: false })
+      : { ok: true, event: { eventId: 'contact:' + p.submissionId }, completed: null, created: p.next && !p.next.none ? Object.assign({ id: 'task-x' }, p.next) : null };
     const { page, errors } = await open(browser, srv.port, 'vered', 1366);
+    // «היום»: the team's page — no «שלי», no signed-in name in its head
+    assert.equal(await page.textContent('#crm-title'), 'היום');
+    assert.equal(await page.textContent('#crm-main .day-head .day-date'), 'כל הצוות');
     await page.click('#crm-nav button[data-area="leads"]');
+    // the board card names its open follow-up
+    assert.match(await page.textContent('.card[data-open-lead="L1"] .next-step'), /לחזור למשפחה · באיחור/);
     // a lead whose manager was chosen and whose meeting has a date but NO outcome: never «נפגש/ת עם»
     await page.click('.card[data-open-lead="L5"]');
     await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-pane="overview"] .kv');
     const kv5 = await page.textContent('#crm-drawer [data-pane="overview"] .kv');
-    assert.match(kv5, /פרטי קשר|סטטוס/); assert.match(kv5, /פגישה מיועדת עם\s*רנטה/); assert.doesNotMatch(kv5, /נפגש\/ת עם/);
+    assert.match(kv5, /פגישה מיועדת עם\s*רנטה/); assert.doesNotMatch(kv5, /נפגש\/ת עם/);
+    assert.equal(await page.$('#crm-next-steps'), null, 'no open follow-up → no «מה הלאה» box');
     await page.click('#crm-drawer-close');
-    // a new lead with no meeting at all
-    await page.click('.card[data-open-lead="L6"]');
-    await page.waitForSelector('#crm-drawer[aria-hidden="false"] [data-pane="overview"] .kv');
-    const kv = await page.textContent('#crm-drawer [data-pane="overview"] .kv');
-    assert.match(kv, /פרטי קשר[\s\S]*0506666666[\s\S]*סטטוס[\s\S]*קיסריה עפרוני[\s\S]*פגישה\s*לא נקבעה/);
-    assert.equal(await page.evaluate(() => { const o = document.querySelector('#crm-drawer [data-pane="overview"]'); return !!(o.querySelector('.kv').compareDocumentPosition(o.querySelector('.actions')) & Node.DOCUMENT_POSITION_FOLLOWING); }), true, 'the details come before the actions');
-    // the documented contacts, on the overview, newest first, with their direction; stored text is text
-    await page.waitForFunction(() => /פנו אלינו/.test(document.querySelector('#crm-recent').textContent), null, { timeout: 5000 });
+    // L1: an overdue follow-up → «מה הלאה» says what, when and who, above the details
+    await page.click('.card[data-open-lead="L1"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-next-steps');
+    const next = await page.textContent('#crm-next-steps');
+    assert.match(next, /מה הלאה[\s\S]*לחזור למשפחה[\s\S]*באיחור של 2 ימים[\s\S]*\(.+\)[\s\S]*אחראי\/ת: ורד/);
+    assert.equal(await page.evaluate(() => { const o = document.querySelector('#crm-drawer [data-pane="overview"]'); const pos = (a, b) => !!(o.querySelector(a).compareDocumentPosition(o.querySelector(b)) & Node.DOCUMENT_POSITION_FOLLOWING); return pos('#crm-next-steps', '.kv') && pos('.kv', '#crm-recent') && pos('#crm-recent', '.actions'); }), true, 'what next → details → calls → actions');
+    assert.equal(await page.locator('#crm-drawer .drawer-head [data-contact-open]').count(), 1, 'ONE «תיעוד שיחה» button');
+    assert.doesNotMatch(await page.textContent('#crm-drawer'), /פנו אלינו/);
+    // the documented calls: the three kinds, the text from the details, the follow-up of a record
+    await page.waitForFunction(() => /שיחה נכנסת/.test(document.querySelector('#crm-recent').textContent), null, { timeout: 5000 });
     const recent = await page.textContent('#crm-recent');
-    assert.match(recent, /פנו אלינו[\s\S]*<b>שאל<\/b> על עלויות[\s\S]*שיחה יוצאת[\s\S]*לא היה מענה/);
-    assert.doesNotMatch(recent, /הליד נוצר/, 'only contacts, not every event');
+    assert.match(recent, /שיחה נכנסת[\s\S]*לשלוח תמונות[\s\S]*המשך: לחזור למשפחה[\s\S]*שיחה נכנסת[\s\S]*<b>שאל<\/b> על עלויות[\s\S]*תיעוד שיחה[\s\S]*לא היה מענה/);
+    assert.doesNotMatch(recent, /הליד נוצר|ניסוח ישן/, 'only contacts; never the stored summary line');
     assert.equal(await page.locator('#crm-recent b').count(), 0, 'no markup from a stored summary');
-    // the meetings pane only displays — it now leads to the scheduling form
-    await page.click('#crm-drawer [data-tab="meetings"]');
-    await page.click('#crm-meetings [data-meeting-go]');
-    assert.equal(await page.getAttribute('#crm-drawer [data-tab="overview"]', 'aria-selected'), 'true');
-    assert.equal(await page.evaluate(() => document.querySelector('#crm-drawer form[data-form="meeting"]').closest('details').open), true);
-    // «פנו אלינו»: the same panel, as an incoming contact
-    await page.click('#crm-drawer .drawer-head [data-contact-open][data-contact-dir="in"]');
+    // «ביטול תיעוד»: a reason is required; the follow-up it will cancel is named; ONE voidContact
+    await page.click('#crm-recent [data-contact-void="' + cid(3) + '"]');
+    assert.match(await page.textContent('#crm-recent form[data-form="contact-void"]'), /«לחזור למשפחה»\) תבוטל יחד איתו/);
+    await page.click('#crm-recent form[data-form="contact-void"] button[type="submit"]');
+    assert.match(await page.textContent('#crm-recent form[data-form="contact-void"] [data-err="reason"]'), /סיבה/);
+    assert.equal(srv.saves.filter((x) => x.action === 'voidContact').length, 0, 'nothing posted without a reason');
+    await page.fill('#crm-recent form[data-form="contact-void"] input[name="reason"]', 'הוזן פעמיים');
+    await page.click('#crm-recent form[data-form="contact-void"] button[type="submit"]');
+    await page.waitForFunction((id) => document.querySelector('#crm-recent') && !document.querySelector('#crm-recent [data-contact-event="' + id + '"]') && /שיחה נכנסת/.test(document.querySelector('#crm-recent').textContent), cid(3), { timeout: 8000 });
+    const vposts = srv.saves.filter((x) => x.action === 'voidContact');
+    assert.equal(vposts.length, 1); assert.equal(vposts[0].eventId, cid(3)); assert.equal(vposts[0].reason, 'הוזן פעמיים');
+    assert.equal(await page.locator('#crm-recent li').count(), 2, 'the voided record left the list');
+    await page.click('#crm-drawer [data-tab="activity"]');
+    assert.match(await page.textContent('#crm-tl li.voided'), /בוטל[\s\S]*לשלוח תמונות/, 'the history keeps it, marked «בוטל»');
+    await page.click('#crm-drawer-close');
+    // «תיעוד שיחה» on a lead with no task: the kind must be chosen
+    await page.click('.card[data-open-lead="L6"]');
+    await page.waitForSelector('#crm-drawer[aria-hidden="false"] .drawer-head [data-contact-open]');
+    await page.click('#crm-drawer .drawer-head [data-contact-open]');
     await page.waitForSelector('#crm-drawer form[data-form="contact"]');
-    assert.match(await page.textContent('#crm-drawer .drawer-head h2'), /תיעוד פנייה נכנסת · מאיה שגב/);
-    assert.equal(await page.inputValue('form[data-form="contact"] input[name="direction"]:checked'), 'in');
-    const optionIds = () => page.$$eval('form[data-form="contact"] select[name="outcome"] option', (els) => els.map((o) => o.value).filter(Boolean));
-    assert.ok(!(await optionIds()).includes('no_answer'), '«לא היה מענה» is not an incoming outcome');
-    assert.match(await page.textContent('form[data-form="contact"]'), /מי פנה/);
-    // switching the direction keeps what was typed and swaps the wording + the outcome list
-    await page.fill('form[data-form="contact"] textarea[name="summary"]', 'התקשר לשאול על ביקור');
-    await page.check('form[data-form="contact"] input[name="direction"][value="out"]');
     assert.match(await page.textContent('#crm-drawer .drawer-head h2'), /תיעוד שיחה · מאיה שגב/);
+    assert.deepEqual(await page.$$eval('form[data-form="contact"] fieldset.direction label', (els) => els.map((e) => e.textContent.trim())), ['שיחה יוצאת', 'שיחה נכנסת', 'תיעוד שיחה']);
+    assert.equal(await page.$$eval('form[data-form="contact"] input[name="direction"]:checked', (els) => els.length), 0, 'no kind is pre-chosen');
+    await page.selectOption('form[data-form="contact"] select[name="outcome"]', 'spoke_follow_up');
+    await page.fill('form[data-form="contact"] textarea[name="summary"]', 'התקשר לשאול על ביקור');
+    await page.check('form[data-form="contact"] input[name="next"][value="d1"]');
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    assert.match(await page.textContent('form[data-form="contact"] [data-err="direction"]'), /שיחה יוצאת, שיחה נכנסת או תיעוד שיחה/);
+    assert.equal(srv.saves.filter((x) => x.action === 'logContact').length, 0, 'nothing posted without a kind');
+    // «שיחה נכנסת»: wording and outcomes follow; what was typed stays
+    const optionIds = () => page.$$eval('form[data-form="contact"] select[name="outcome"] option', (els) => els.map((o) => o.value).filter(Boolean));
     assert.ok((await optionIds()).includes('no_answer'));
     await page.check('form[data-form="contact"] input[name="direction"][value="in"]');
+    assert.ok(!(await optionIds()).includes('no_answer'), '«לא היה מענה» is not an incoming outcome');
+    assert.match(await page.textContent('form[data-form="contact"]'), /מי התקשר\/ה/);
+    assert.equal(await page.inputValue('form[data-form="contact"] select[name="outcome"]'), 'spoke_follow_up');
     assert.equal(await page.inputValue('form[data-form="contact"] textarea[name="summary"]'), 'התקשר לשאול על ביקור');
-    assert.equal(await page.$$eval('form[data-form="contact"] input[name="next"]:checked', (els) => els.length), 0, 'still no default follow-up');
-    // «לא נדרש המשך» answers «קשר הבא» by itself — no typed explanation
-    await page.selectOption('form[data-form="contact"] select[name="outcome"]', 'spoke_no_follow_up');
-    assert.equal(await page.inputValue('form[data-form="contact"] input[name="next"]:checked'), 'none');
-    assert.match(await page.textContent('#crm-next-preview'), /ללא משימת המשך — לא נדרש המשך/);
     await page.click('form[data-form="contact"] button[type="submit"]');
     await page.waitForFunction(() => !document.querySelector('form[data-form="contact"]') && document.querySelector('#crm-drawer [data-tab="overview"]') && document.querySelector('#crm-drawer [data-tab="overview"]').getAttribute('aria-selected') === 'true', null, { timeout: 5000 });
     const posted = srv.saves.filter((x) => x.action === 'logContact');
     assert.equal(posted.length, 1, 'ONE logContact');
-    assert.equal(posted[0].contact.leadId, 'L6'); assert.equal(posted[0].contact.direction, 'in'); assert.equal(posted[0].contact.outcome, 'spoke_no_follow_up');
-    assert.equal(posted[0].contact.summary, 'התקשר לשאול על ביקור'); assert.deepEqual(posted[0].next, { none: true, explanation: 'לא נדרש המשך' });
+    assert.equal(posted[0].contact.leadId, 'L6'); assert.equal(posted[0].contact.direction, 'in'); assert.equal(posted[0].contact.outcome, 'spoke_follow_up');
+    assert.equal(posted[0].next.dueDate, daysAgo(-1));
+    assert.match(await page.textContent('#crm-toast'), /השיחה נשמרה ✓ · המשך: לחזור — התקיימה שיחה ונדרש המשך — /, 'the confirmation names the follow-up and its date');
+    // «לא נדרש המשך» answers «קשר הבא» by itself
+    await page.click('#crm-drawer .drawer-head [data-contact-open]');
+    await page.waitForSelector('#crm-drawer form[data-form="contact"]');
+    await page.check('form[data-form="contact"] input[name="direction"][value="note"]');
+    await page.selectOption('form[data-form="contact"] select[name="outcome"]', 'spoke_no_follow_up');
+    assert.equal(await page.inputValue('form[data-form="contact"] input[name="next"]:checked'), 'none');
+    assert.match(await page.textContent('#crm-next-preview'), /ללא משימת המשך — לא נדרש המשך/);
+    await page.click('form[data-form="contact"] button[type="submit"]');
+    await page.waitForFunction(() => !document.querySelector('form[data-form="contact"]'), null, { timeout: 5000 });
+    const last = srv.saves.filter((x) => x.action === 'logContact')[1];
+    assert.equal(last.contact.direction, 'note'); assert.deepEqual(last.next, { none: true, explanation: 'לא נדרש המשך' });
+    // the meetings pane only displays — it leads to the scheduling form
+    await page.click('#crm-drawer [data-tab="meetings"]');
+    await page.click('#crm-meetings [data-meeting-go]');
+    assert.equal(await page.getAttribute('#crm-drawer [data-tab="overview"]', 'aria-selected'), 'true');
+    assert.equal(await page.evaluate(() => document.querySelector('#crm-drawer form[data-form="meeting"]').closest('details').open), true);
     assert.deepEqual(errors, []);
-    // a phone: both header buttons, no horizontal scroll
+    // a phone: the card and the panel fit
     const m = await open(browser, srv.port, 'vered', 390);
     await m.page.click('#crm-burger'); await m.page.click('#crm-nav button[data-area="leads"]');
-    await m.page.click('.card[data-open-lead="L6"]');
-    await m.page.waitForSelector('#crm-drawer[aria-hidden="false"] .drawer-head [data-contact-dir="in"]');
-    assert.equal(await m.page.locator('#crm-drawer .drawer-head [data-contact-open]').count(), 2);
+    await m.page.click('.card[data-open-lead="L1"]');
+    await m.page.waitForSelector('#crm-drawer[aria-hidden="false"] #crm-next-steps');
+    assert.equal(await noHScroll(m.page), true);
+    await m.page.click('#crm-drawer .drawer-head [data-contact-open]');
+    await m.page.waitForSelector('#crm-drawer form[data-form="contact"] fieldset.direction');
     assert.equal(await noHScroll(m.page), true);
     assert.deepEqual(m.errors, []);
   } finally { activityAnswer = null; saveAnswer = null; await browser.close(); srv.close(); }

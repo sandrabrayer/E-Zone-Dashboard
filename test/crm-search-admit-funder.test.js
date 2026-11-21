@@ -223,7 +223,7 @@ test('B: search from «היום שלי» finds a RELEASED patient (not a jump to
     await page.click('#crm-drawer-close');
     await page.fill('#crm-search', '');
     await page.press('#crm-search', 'Enter');
-    await page.waitForFunction(() => document.querySelector('#crm-title').textContent === 'היום שלי');
+    await page.waitForFunction(() => document.querySelector('#crm-title').textContent === 'היום');
     // the 🔍 button searches at once
     await page.fill('#crm-search', '7654321');
     await page.click('#crm-search-go');

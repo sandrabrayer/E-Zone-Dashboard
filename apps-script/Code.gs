@@ -1219,11 +1219,16 @@ const TASK_READ_MAX = 1000;
 const CONTACT_OUTCOMES = ['spoke_follow_up', 'spoke_no_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set',
   'no_interest_now', 'bad_contact_details', 'stop_contact'];
 const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
-/* Who initiated the contact (CHANGELOG-crm-incoming-contact.md): 'out' = we called,
- * 'in' = the lead / patient / family contacted us. Kept in the event's details JSON
- * (no sheet column); an event written before this field reads as 'out'. */
-const CONTACT_DIRECTIONS = ['out', 'in'];
-const CONTACT_INCOMING_PREFIX = 'פנייה נכנסת';
+/* The three kinds of a contact record (CHANGELOG-crm-contact-three-states.md): 'out' = «שיחה
+ * יוצאת» (we called), 'in' = «שיחה נכנסת» (they called us), 'note' = «תיעוד שיחה» (a record with
+ * no direction). Kept in the event's details JSON (no sheet column); an event with no direction —
+ * written before the field, or by a caller that does not send it — is 'note'. */
+const CONTACT_DIRECTIONS = ['out', 'in', 'note'];
+const CONTACT_DIRECTION_LABELS = { out: 'שיחה יוצאת', in: 'שיחה נכנסת' };   // 'note' adds nothing to the summary
+/* A contact record is never edited or deleted: a mistake (a call entered twice) is VOIDED by a
+ * second event, kind contact_voided, whose supersedesEventId names it. Readers skip a voided record. */
+const CONTACT_VOID_KIND = 'contact_voided';
+const CONTACT_EVENT_ID_RE = /^contact:sub-[0-9a-f]{32}$/;
 /* 'spoke_no_follow_up' IS the answer to «what next»: its explanation may be left empty. */
 const CONTACT_NO_FOLLOW_UP_TEXT = 'לא נדרש המשך';
 const CONTACT_SUMMARY_MAX = 1000;
@@ -1243,7 +1248,10 @@ const TASK_MESSAGES = {
   bad_assignee: 'אחראי/ת לא תקין/ה',
   bad_outcome: 'תוצאת שיחה לא מוכרת',
   bad_channel: 'ערוץ קשר לא מוכר',
-  bad_direction: 'כיוון הפנייה לא מוכר',
+  bad_direction: 'סוג התיעוד לא מוכר',
+  bad_event: 'התיעוד אינו תקין',
+  event_not_found: 'התיעוד לא נמצא — רענני',
+  missing_void_reason: 'יש לציין סיבה קצרה לביטול התיעוד',
   missing_contact: 'חסר תיעוד שיחה',
   bad_next: 'הפעולה הבאה לא תקינה',
   missing_next_explanation: 'ללא משימת המשך — יש להסביר מי ממשיך את הטיפול',
@@ -1401,6 +1409,10 @@ const DELETE_ACTIONS = [
   // pending refund — saved, or still only computed by policy — that should
   // not be paid. Vered and Sandra (deleter); never Ortal. Appended.
   'cancelRefund',
+  // «ביטול תיעוד» on a contact record entered by mistake (CHANGELOG-crm-contact-three-states.md):
+  // append-only (a contact_voided event; the record's row is untouched), but it retires a
+  // record and may cancel its follow-up task — so it needs `deleter` like every other void. Appended.
+  'voidContact',
 ];
 
 /* ===== Restricted view — the `finance` capability (Sandra, 2026-10-03) =====
@@ -1693,6 +1705,8 @@ const PROXY_KNOWN_ACTIONS = [
   'getActivity',
   // CRM Stage 1a (CHANGELOG-crm-tasks-contact-log.md)
   'getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact',
+  // A contact record entered by mistake is voided, never deleted (CHANGELOG-crm-contact-three-states.md)
+  'voidContact',
   // CRM Stage 2 (CHANGELOG-crm-my-day.md)
   'contactIndex',
   // Lead flags: waitlist reason + patient-side meeting change (CHANGELOG-crm-vered-feedback-1104.md)
@@ -2067,6 +2081,12 @@ function handle_(params) {
       if (action === 'getTasks') return jsonOut_(getTasks_(params, actor));
       const fn = { createTask: createTask_, completeTask: completeTask_, rescheduleTask: rescheduleTask_, reassignTask: reassignTask_, withdrawTask: cancelTask_, logContact: logContact_ }[action];
       return jsonOut_(fn(params, who, actor));
+    }
+    // Void a contact record (CHANGELOG-crm-contact-three-states.md): logContact's gate + `deleter` (DELETE_ACTIONS, above).
+    if (action === 'voidContact') {
+      const no = expectedDischargesRefused_(params);
+      if (no) return jsonOut_(no);
+      return jsonOut_(voidContact_(params, actorLabel_(params) || requestUser_(params), actingUser_(params)));
     }
     // Lead flags (CHANGELOG-crm-vered-feedback-1104.md): the same gate as logContact.
     if (action === 'logLeadFlag') {
@@ -4719,11 +4739,13 @@ function contactIndex_(params, actor) {
   const leads = {}, patients = {};
   let count = 0;
   const flags = {};
+  const voided = contactVoidedIds_(rows);   // a voided record is not a contact: never «last contact», never counted
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const kind = r ? String(r.kind == null ? '' : r.kind).trim() : '';
     if (LEAD_FLAG_KINDS.indexOf(kind) >= 0) { leadFlagIndexPut_(flags, r, kind); continue; }
     if (!r || kind !== 'contact_logged') continue;
+    if (voided[String(r.eventId == null ? '' : r.eventId).trim()]) continue;
     count++;
     let d = {};
     try { d = r.detailsJson ? JSON.parse(String(r.detailsJson)) : {}; } catch (_) { d = {}; }
@@ -4985,7 +5007,7 @@ function cancelTask_(body, actorName, actor) {
  *   3. the follow-up (next): a new task 'task-<sid>-next' from next.dueDate / next.days /
  *      next.window, or none with an explanation (next.none + next.explanation).
  * contact: { leadId?, patientId?, personId?, houseId?, occurredAt?, channel, withWhom, reason?,
- *            outcome (CONTACT_OUTCOMES), summary, taskId?, direction? ('out' default | 'in' = they contacted us) }
+ *            outcome (CONTACT_OUTCOMES), summary, taskId?, direction? (CONTACT_DIRECTIONS; missing = 'note') }
  * next:    { none?:true, explanation?, dueDate?, dueTime?, days?, windowStart?, windowEnd?,
  *            kind? (default call), title?, assignee?, reason? }
  * → { ok, event, completed: task|null, created: task|null, replayed? } */
@@ -5001,7 +5023,7 @@ function logContact_(body, actorName, actor) {
   if (CONTACT_OUTCOMES.indexOf(outcome) < 0) return taskNo_('bad_outcome');
   const channel = String(c.channel == null ? 'phone' : c.channel).trim() || 'phone';
   if (CONTACT_CHANNELS.indexOf(channel) < 0) return taskNo_('bad_channel');
-  const direction = String(c.direction == null ? 'out' : c.direction).trim() || 'out';
+  const direction = String(c.direction == null ? 'note' : c.direction).trim() || 'note';
   if (CONTACT_DIRECTIONS.indexOf(direction) < 0) return taskNo_('bad_direction');
   const nowIso = new Date().toISOString();
   const occurredAt = activityIso_(c.occurredAt) || (c.occurredAt && taskIso_(c.occurredAt) ? taskIso_(c.occurredAt) + 'T12:00:00.000Z' : nowIso);
@@ -5029,7 +5051,7 @@ function logContact_(body, actorName, actor) {
   }
   const event = { eventId: 'contact:' + sid, occurredAt: occurredAt, kind: 'contact_logged', source: 'manual', actorId: '', actorName: actorName,
     leadId: leadId, patientId: patientId, personId: taskText_(c.personId, ACTIVITY_ID_MAX), houseId: taskText_(c.houseId, 40),
-    summary: taskText_((direction === 'in' ? CONTACT_INCOMING_PREFIX + ' · ' : '') + contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
+    summary: taskText_((CONTACT_DIRECTION_LABELS[direction] ? CONTACT_DIRECTION_LABELS[direction] + ' · ' : '') + contactOutcomeLabel_(outcome) + (taskText_(c.summary, CONTACT_SUMMARY_MAX) ? ' · ' + taskText_(c.summary, 150) : ''), ACTIVITY_SUMMARY_MAX),
     details: { direction: direction, channel: channel, withWhom: taskText_(c.withWhom, CONTACT_WITH_MAX), reason: taskText_(c.reason, CONTACT_REASON_MAX), outcome: outcome,
       summary: taskText_(c.summary, CONTACT_SUMMARY_MAX), taskId: taskText_(c.taskId, 80), nextTaskId: nextTask ? nextTask.id : '', noNext: noNextText } };
   const ev = activityRow_(event, nowIso);
@@ -5062,6 +5084,67 @@ function logContact_(body, actorName, actor) {
     return { ok: true, event: { eventId: ev.row.eventId, occurredAt: ev.row.occurredAt, kind: 'contact_logged', summary: ev.row.summary }, completed: completed, created: created, replayed: wrote.duplicate === true };
   } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
 }
+/* PURE: { eventId: true } for every contact record a contact_voided event supersedes. */
+function contactVoidedIds_(rows) {
+  const out = {};
+  for (let i = 0; i < (rows || []).length; i++) {
+    const r = rows[i];
+    if (!r || String(r.kind == null ? '' : r.kind).trim() !== CONTACT_VOID_KIND) continue;
+    const id = String(r.supersedesEventId == null ? '' : r.supersedesEventId).trim();
+    if (id) out[id] = true;
+  }
+  return out;
+}
+
+/* action=voidContact { eventId: 'contact:sub-…', reason } — a contact record entered by mistake
+ * (the same call twice). APPEND-ONLY: the record's row is never touched; ONE new Activity event
+ * (kind contact_voided, eventId 'void:<eventId>', supersedesEventId = the record) says who voided
+ * it, when and why. The follow-up task that record created is cancelled with it — only while it
+ * is still open and only if it was created by a contact (source 'contact'); a task the record
+ * FULFILLED stays done. Idempotent: voiding a voided record answers ok and writes nothing.
+ * Role: `deleter` (DELETE_ACTIONS — handle_ refuses it before this runs), on top of logContact's
+ * gate; a money-only scope (the controller) is refused.
+ * → { ok, voided: { eventId }, cancelledTask: task|null, replayed? } */
+function voidContact_(body, actorName, actor) {
+  if (activityScope_(actor) === 'money') return { ok: false, error: 'forbidden', message: 'אין הרשאה לפעולה זו' };
+  const b = body && typeof body === 'object' ? body : {};
+  const eventId = String(b.eventId == null ? '' : b.eventId).trim();
+  if (!CONTACT_EVENT_ID_RE.test(eventId)) return taskNo_('bad_event');
+  const reason = taskText_(b.reason, TASK_REASON_MAX);
+  if (reason.length < 2) return taskNo_('missing_void_reason');
+  const nowIso = new Date().toISOString();
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('voidContact_');
+  try {
+    const ash = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(ACTIVITY_SHEET);
+    const rows = ash ? readSheet_(ash, ACTIVITY_COLUMNS) : [];
+    const orig = rows.filter(function (r) { return r && String(r.eventId == null ? '' : r.eventId).trim() === eventId && String(r.kind == null ? '' : r.kind).trim() === 'contact_logged'; })[0];
+    if (!orig) return taskNo_('event_not_found');
+    if (contactVoidedIds_(rows)[eventId]) return { ok: true, voided: { eventId: eventId }, cancelledTask: null, replayed: true };
+    let d = {};
+    try { d = orig.detailsJson ? JSON.parse(String(orig.detailsJson)) : {}; } catch (_) { d = {}; }
+    const ev = activityRow_({ eventId: 'void:' + eventId, occurredAt: nowIso, kind: CONTACT_VOID_KIND, source: 'manual', actorId: '', actorName: actorName,
+      leadId: taskText_(orig.leadId, ACTIVITY_ID_MAX), patientId: taskText_(orig.patientId, ACTIVITY_ID_MAX), personId: taskText_(orig.personId, ACTIVITY_ID_MAX), houseId: taskText_(orig.houseId, 40),
+      summary: taskText_('תיעוד שיחה בוטל · ' + reason, ACTIVITY_SUMMARY_MAX), details: { reason: reason, voidedEventId: eventId }, supersedesEventId: eventId }, nowIso);
+    if (!ev.ok) return ev;
+    activityAppendRow_(ev.row);
+    let cancelledTask = null;
+    const nextId = taskText_(d && d.nextTaskId, 80);
+    if (nextId && TASK_ID_RE.test(nextId)) {
+      const tsh = getOrCreateSheet_(TASKS_SHEET, TASK_COLUMNS);
+      const cur = taskReadById_(tsh, nextId);
+      if (cur.task && cur.task.status === 'open' && cur.task.source === 'contact' && taskVisible_(cur.task, actor)) {
+        cur.task.status = 'cancelled'; cur.task.cancelReason = taskText_('התיעוד שיצר אותה בוטל · ' + reason, TASK_REASON_MAX);
+        cur.task.doneAt = nowIso; cur.task.doneBy = actorName; cur.task.updatedAt = nowIso; cur.task.updatedBy = actorName;
+        taskWriteRow_(tsh, cur.row, cur.task);
+        cancelledTask = cur.task;
+      }
+    }
+    logAudit_('contact_voided', 'voidContact_', String(orig.patientId || orig.leadId || ''), '', { eventId: eventId, voidEventId: ev.row.eventId, cancelledTaskId: cancelledTask ? cancelledTask.id : '', updatedBy: actorName });
+    return { ok: true, voided: { eventId: eventId }, cancelledTask: cancelledTask, replayed: false };
+  } finally { try { lock.releaseLock(); } catch (_) { /* no-op */ } }
+}
+
 /* ===== Lead flags (CHANGELOG-crm-vered-feedback-1104.md) =====
  * Two small per-lead facts that need NO Leads column. A new LEAD_COLUMNS entry
  * would shift the position-mapped closed-lead sheets (IRRELEVANT_ / REMOVED_

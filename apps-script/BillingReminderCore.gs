@@ -533,15 +533,15 @@ function render(audience, day, extra) {
   const x = extra && typeof extra === 'object' ? (extra.total !== undefined ? extra : extraOf({ x: extra }, 'x')) : null;
   if (x && audience.owner === 'vered') {
     const lines = EXTRA_KEYS.filter(k => x[k]).map(k => EXTRA_LABELS[k] + ': ' + x[k]);
-    sections.push({ heading: 'היום שלי — שיחות, מעקבים ופגישות', lines: lines.length ? lines.concat(['המספרים הם משימות; הפירוט, תיעוד השיחה ושינוי המועד — ב-CRM.']) : ['אין שיחות או מעקבים להיום.'], crm: true });
+    sections.push({ heading: 'היום — שיחות, מעקבים ופגישות', lines: lines.length ? lines.concat(['המספרים הם משימות; הפירוט, תיעוד השיחה ושינוי המועד — ב-CRM.']) : ['אין שיחות או מעקבים להיום.'], crm: true });
   }
   const footer = 'השלמת טיפול באפליקציה מעדכנת את התור מיד, בכל יום. הודעה זו היא תמונת מצב למועד הכנתה.';
-  const body = [title, date, intro, ...sections.flatMap(s => [s.heading, ...s.lines].concat(s.crm ? ['פתיחת היום שלי: ' + CRM_URL] : [])), 'פתיחת בקרת גבייה: ' + URL, footer].join('\n\n');
+  const body = [title, date, intro, ...sections.flatMap(s => [s.heading, ...s.lines].concat(s.crm ? ['פתיחת «היום»: ' + CRM_URL] : [])), 'פתיחת בקרת גבייה: ' + URL, footer].join('\n\n');
   const htmlBody = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>' + esc(title) + '</title></head>' +
     '<body dir="rtl" style="margin:0;background:#f4f6fa;color:#17233a;font-family:Arial,sans-serif;font-size:16px;line-height:1.6">' +
     '<table role="presentation" dir="rtl" width="100%" cellspacing="0" cellpadding="0"><tr><td align="right" style="padding:24px">' +
     '<h1 style="font-size:24px">' + esc(title) + '</h1><p>נכון ל־<span dir="ltr">' + date + '</span></p><p>' + esc(intro) + '</p>' +
-    sections.map(s => '<h2 style="font-size:20px;border-top:1px solid #8995a8;padding-top:16px">' + esc(s.heading) + '</h2>' + s.lines.map(line => '<p>' + esc(line) + '</p>').join('') + (s.crm ? '<p><a href="' + CRM_URL + '" style="display:inline-block;background:#0073EA;color:#ffffff;padding:12px 20px;text-decoration:underline">פתיחת היום שלי</a></p>' : '')).join('') +
+    sections.map(s => '<h2 style="font-size:20px;border-top:1px solid #8995a8;padding-top:16px">' + esc(s.heading) + '</h2>' + s.lines.map(line => '<p>' + esc(line) + '</p>').join('') + (s.crm ? '<p><a href="' + CRM_URL + '" style="display:inline-block;background:#0073EA;color:#ffffff;padding:12px 20px;text-decoration:underline">פתיחת «היום»</a></p>' : '')).join('') +
     '<p><a href="' + URL + '" style="display:inline-block;background:#163d77;color:#ffffff;padding:12px 20px;text-decoration:underline">פתיחת בקרת גבייה</a></p><p>' + esc(footer) + '</p></td></tr></table></body></html>';
   return { subject: 'E-ZONE | ' + title + ' | ' + date, body, htmlBody, name: 'E-ZONE Dashboard' };
 }
