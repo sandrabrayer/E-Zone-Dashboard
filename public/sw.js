@@ -449,7 +449,9 @@
 // restore flow). (CHANGELOG-crm-reactivate-card.md). From v155; monotonic.
 // v156 → v157: restore a mobile's lost leading 0 in the lead-edit form + newest
 // leads first in the board columns. (CHANGELOG-crm-leads-view-fixes.md). From v156; monotonic.
-var CACHE_VERSION = 'v157';
+// v157 → v158: an incoming contact («פנו אלינו») in the contact log + the lead card shows its
+// details first (CHANGELOG-crm-incoming-contact.md). crm.js and crm.css changed. From the live v157; monotonic.
+var CACHE_VERSION = 'v158';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included

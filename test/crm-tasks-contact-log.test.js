@@ -32,7 +32,7 @@ test('lists: the seven actions are proxy-known; kinds / statuses / outcomes / ch
   for (const a of ['getTasks', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logContact']) assert.ok(known.includes(a), a);
   assert.deepEqual(Array.from(g.run('TASK_KINDS')), ['call', 'meeting', 'collection', 'admission', 'discharge', 'continuity', 'review', 'other']);
   assert.deepEqual(Array.from(g.run('TASK_STATUSES')), ['open', 'done', 'cancelled']);
-  assert.deepEqual(Array.from(g.run('CONTACT_OUTCOMES')), ['spoke_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set', 'no_interest_now', 'bad_contact_details', 'stop_contact']);
+  assert.deepEqual(Array.from(g.run('CONTACT_OUTCOMES')), ['spoke_follow_up', 'spoke_no_follow_up', 'no_answer', 'call_back_later', 'awaiting_decision', 'meeting_set', 'no_interest_now', 'bad_contact_details', 'stop_contact']);
   assert.deepEqual(Array.from(g.run('CONTACT_CHANNELS')), ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other']);
   const cols = Array.from(g.run('TASK_COLUMNS'));
   assert.deepEqual(cols.slice(0, 15), ['id', 'kind', 'leadId', 'patientId', 'personId', 'houseId', 'title', 'reason', 'assignee', 'dueDate', 'dueTime', 'windowStart', 'windowEnd', 'status', 'source']);
