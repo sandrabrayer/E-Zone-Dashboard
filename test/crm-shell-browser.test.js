@@ -129,13 +129,14 @@ async function boot(options = {}) {
     req.end = () => {
       let parsed = {};
       try { parsed = JSON.parse(body); } catch (_) { parsed = {}; }
-      actions.push({ action: parsed.action, user: parsed.proxyUserId });
+      actions.push({ action: parsed.action === 'intakeContactDesk' ? parsed.action + '.' + parsed.op : parsed.action, user: parsed.proxyUserId });
       if (parsed.action === 'saveAll') saves.push(parsed);
       if (parsed.action === 'saveCredit') saves.push(parsed);
       if (['moveLeadIrrelevant', 'removeLead', 'restoreLead', 'appendFunder', 'deletePatientRow', 'dischargePatient', 'reportPayment', 'setBillingDiscount', 'upsertBillingOverride', 'requestRefundPayoutApproval', 'approveRefundPayout', 'settleRefund', 'editReceipt', 'savePayment', 'confirmPayment', 'cancelRefund', 'restorePatient', 'restorePatientToActive'].indexOf(parsed.action) >= 0) saves.push(parsed);
       if (['logContact', 'createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask', 'logLeadFlag'].indexOf(parsed.action) >= 0) saves.push(parsed);
       const answer = parsed.action === 'getData' ? DATA : parsed.action === 'billingControlQueue' ? QUEUE : parsed.action === 'getActivity' ? ACTIVITY
         : parsed.action === 'getTasks' ? (tasksAnswer ? tasksAnswer() : (parsed.status === 'open' && parsed.proxyUserId !== 'ortal' ? TASKS : { ok: true, total: 0, tasks: [] }))   // Code.gs scopes Ortal to money tasks (none in the fixture)
+        : parsed.action === 'intakeContactDesk' && parsed.op === 'signals' ? { ok: true, ids: [] }
         : parsed.action === 'contactIndex' ? (indexAnswer ? indexAnswer() : INDEX)
         : parsed.action === 'logContact' ? (saveAnswer ? saveAnswer(parsed) : { ok: true, event: { eventId: 'contact:' + parsed.submissionId }, completed: null, created: parsed.next && !parsed.next.none ? Object.assign({ id: 'task-x' }, parsed.next) : null })
         : ['createTask', 'completeTask', 'rescheduleTask', 'reassignTask', 'withdrawTask'].indexOf(parsed.action) >= 0 ? (saveAnswer ? saveAnswer(parsed) : { ok: true, task: { id: parsed.id || 'task-new' } })
@@ -300,7 +301,7 @@ test('CRM shell at 1366 px (Vered): side menu, six areas, work queue, board/tabl
     await page.click('#crm-nav button[data-area="control"]');
     assert.ok(await noHScroll(page), 'no horizontal page scroll');
     assert.deepEqual(errors, []);
-    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks', 'refundPayoutForecast'], 'reads only, no queue for Vered');
+    assert.deepEqual([...new Set(srv.actions.map((a) => a.action))].sort(), ['contactIndex', 'debtAging', 'getActivity', 'getCredits', 'getData', 'getPayments', 'getTasks', 'intakeContactDesk.signals', 'refundPayoutForecast'], 'reads only, including the foreground signal check, no payment queue for Vered');
   } finally { await browser.close(); srv.close(); }
 });
 

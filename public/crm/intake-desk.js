@@ -14,7 +14,17 @@
   function button(title, action, primary) {
     const b = el('button', title); b.type = 'button'; b.className = 'btn small' + (primary ? ' primary' : ''); b.onclick = action; return b;
   }
-  function field(title, control) { const label = el('label', title); label.append(control); return label; }
+  let fieldNumber = 0;
+  function field(title, control) {
+    const label = el('label');
+    if (title) {
+      const caption = el('span', title);
+      caption.id = 'desk-field-' + ++fieldNumber;
+      control.setAttribute('aria-labelledby', caption.id);
+      label.append(caption);
+    }
+    label.append(control); return label;
+  }
   function select(labels, prompt) {
     const s = el('select'); if (prompt) s.add(new win.Option(prompt, ''));
     Object.entries(labels).forEach(function (pair) { s.add(new win.Option(pair[1], pair[0])); }); return s;
