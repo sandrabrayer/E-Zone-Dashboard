@@ -2973,6 +2973,10 @@
     { code: 'visit', title: 'לתאם ביקור עם המשפחה' },
     { code: 'status', title: 'לחזור למשפחה עם עדכון סטטוס' }
   ];
+  const CATALOG_MESSAGE = 'שלום, בהמשך לשיחתנו מצורף הקטלוג שביקשת. אפשר להשיב לנו כאן בכל שאלה.';
+  function isCatalogTask(t) {
+    return t.source === 'contact' && t.kind === 'admission' && /-catalog$/.test(t.id) && t.title === INTAKE_PROMISES[0].title;
+  }
   /* «קשר הבא»: no automatic default — the user picks (spec §8). */
   const NEXT_CHOICES = [{ id: 'd1', label: 'מחר', days: 1 }, { id: 'd3', label: 'בעוד 3 ימים', days: 3 }, { id: 'd7', label: 'בעוד שבוע', days: 7 }, { id: 'd14', label: 'בעוד שבועיים', days: 14 },
     { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'promises', label: 'משימות המשך לשיחה' }, { id: 'none', label: 'ללא משימת המשך' }];
@@ -3941,7 +3945,7 @@
       const subj = r.subjectKind + ':' + r.subjectId;
       const openAttr = ' data-open-' + r.subjectKind + '="' + esc(r.subjectId) + '"' + (r.open ? ' data-open-tab="' + esc(r.open) + '"' : '') + (r.focusMeeting ? ' data-focus-meeting="1"' : '');
       if (r.task && (r.task.kind === 'call' || r.task.kind === 'collection')) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '" data-task-id="' + esc(r.task.id) + '">תיעוד שיחה</button>');
-      else if (r.task) b.push('<button type="button" class="btn small primary" data-task-done="' + esc(r.task.id) + '">סיום</button>');
+      else if (r.task) b.push(taskDoneButton(r.task));
       else if (r.contactable) b.push('<button type="button" class="btn small primary" data-contact-open="' + esc(subj) + '">תיעוד שיחה</button>');
       else if (r.focusMeeting) b.push('<button type="button" class="btn small primary"' + openAttr + '>קביעת תאריך</button>');
       else if (r.classic && r.kind === 'to_verify' && r.receiptId && state.me && state.me.canConfirm) b.push('<button type="button" class="btn small verify" data-verify="' + esc(r.receiptId) + '" title="אימות שהכסף התקבל בבנק">אמת</button>');
@@ -6903,6 +6907,9 @@
         if (state.drawer && !state.contact) openDrawer(state.drawer.kind, state.drawer.id, true);
       });
     }
+    function taskDoneButton(t) {
+      return '<button type="button" class="btn small primary" data-task-done="' + esc(t.id) + '">' + (isCatalogTask(t) ? 'הכנה ותיעוד שליחת קטלוג' : 'סיום') + '</button>';
+    }
     function taskRowHtml(r, inCard) {
       const t = r.task;
       const isCall = s(t.kind) === 'call' || s(t.kind) === 'collection';
@@ -6912,7 +6919,7 @@
         + '<span>' + (inCard ? esc(t.reason || '—') : esc(t.title) + (t.reason ? '<br><span class="sub">' + esc(t.reason) + '</span>' : '')) + '</span>'
         + '<span>' + esc(t.assignee || '—') + '</span><span>' + esc(r.when) + '</span>'
         + '<span>' + chip(r.state === 'undated' ? 'wait' : r.state, r.state === 'undated' ? 'ללא תאריך' : stateText(r.state)) + '</span>'
-        + '<span class="toolbar">' + (isCall ? '<button type="button" class="btn small primary" data-contact-open="' + esc(r.subject.kind + ':' + r.subject.id) + '" data-task-id="' + esc(t.id) + '">תיעוד שיחה</button>' : '<button type="button" class="btn small primary" data-task-done="' + esc(t.id) + '">סיום</button>')
+        + '<span class="toolbar">' + (isCall ? '<button type="button" class="btn small primary" data-contact-open="' + esc(r.subject.kind + ':' + r.subject.id) + '" data-task-id="' + esc(t.id) + '">תיעוד שיחה</button>' : taskDoneButton(t))
         + '<button type="button" class="btn small" data-task-resched="' + esc(t.id) + '">שינוי מועד</button>'
         + (inCard ? '<button type="button" class="btn small" data-task-more="' + esc(t.id) + '">עוד…</button>' : '') + '</span></div>'
         + '<div class="task-form" data-task-form="' + esc(t.id) + '"></div>';
@@ -6964,6 +6971,21 @@
           + '<label>תאריך <input type="date" name="dueDate" value="' + esc(s(t.dueDate)) + '">' + err('dueDate') + '</label><label>שעה <input type="time" name="dueTime" value="' + esc(s(t.dueTime)) + '">' + err('dueTime') + '</label>'
           + '<label class="wide">סיבה' + (t.source === 'contact' ? ' * (מועד שהובטח למשפחה)' : '') + ' <input type="text" name="reason" maxlength="300">' + err('reason') + '</label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת המועד</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
+      } else if (kind === 'done' && isCatalogTask(t)) {
+        const c = compute(state.data, state.today);
+        const lead = c.leads.find(function (l) { return l.id === t.leadId; });
+        const patient = !lead && c.patients.find(function (p) { return p.id === t.patientId; });
+        const names = lead ? [lead.name, lead.contactName] : [patient && patient.name];
+        const listId = 'catalog-recipients-' + (el.closest('#crm-drawer') ? 'card-' : 'day-') + id;
+        el.innerHTML = '<form data-form="catalog-report" data-task="' + esc(id) + '" class="inline" novalidate>'
+          + '<label class="wide">נוסח להודעה<textarea readonly name="message" rows="2">' + esc(CATALOG_MESSAGE) + '</textarea></label>'
+          + '<button type="button" class="btn small" data-catalog-copy>העתקת הנוסח</button>'
+          + '<p class="wide">בוואטסאפ העסקי של איזון, פתחי את השיחה עם הנמען שאישר לקבל מידע וצרפי את הקטלוג המאושר למשפחות.</p>'
+          + '<label>שם הקטלוג והגרסה שנשלחה<input type="text" name="edition" maxlength="80" required>' + err('edition') + '</label>'
+          + '<label>למי נשלח הקטלוג<input type="text" name="recipient" list="' + esc(listId) + '" maxlength="60" required>' + err('recipient') + '</label>'
+          + '<datalist id="' + esc(listId) + '">' + Array.from(new Set(names.filter(Boolean))).map(function (n) { return '<option value="' + esc(n) + '"></option>'; }).join('') + '</datalist>'
+          + '<label class="wide"><input type="checkbox" name="confirmed"> אני מאשרת ששלחתי את הקטלוג בוואטסאפ</label>' + err('confirmed')
+          + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">שמירת דיווח השליחה</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">סגירה</button></form>';
       } else if (kind === 'done') {
         el.innerHTML = '<form data-form="task-done" data-task="' + esc(id) + '" novalidate class="inline"><label class="wide">מה נעשה <input type="text" name="outcome" maxlength="300"></label>'
           + '<div class="err" data-err="_form"></div><button type="submit" class="btn small primary">סימון כהושלם</button> <button type="button" class="btn small" data-task-cancel-form="' + esc(id) + '">ביטול</button></form>';
@@ -7364,6 +7386,13 @@
       } else if (f.dataset.form === 'task-resched') {
         const vals = contactValues(f); const tk = taskById(f.dataset.task);
         postTask(f, rescheduleBody(f.dataset.task, vals), rescheduleErrors(vals, tk), f.dataset.task, 'המועד עודכן');
+      } else if (f.dataset.form === 'catalog-report') {
+        const report = { edition: v('edition'), recipient: v('recipient'), confirmed: f.elements.confirmed.checked };
+        const errors = {};
+        if (!report.edition) errors.edition = 'יש לציין איזו גרסה נשלחה';
+        if (!report.recipient) errors.recipient = 'יש לציין למי נשלח הקטלוג';
+        if (!report.confirmed) errors.confirmed = 'יש לאשר שהשליחה בוצעה';
+        postTask(f, { action: 'completeTask', id: f.dataset.task, catalogReport: report }, errors, f.dataset.task, 'דיווח השליחה נשמר');
       } else if (f.dataset.form === 'task-done') {
         postTask(f, { action: 'completeTask', id: f.dataset.task, outcome: v('outcome') }, {}, f.dataset.task, 'המשימה הושלמה');
       } else if (f.dataset.form === 'task-reassign') {
@@ -7503,8 +7532,16 @@
       if (t.dataset.toOutpatient) { if (win.confirm('להעביר לאמבולטורי (ליד טיפול חוץ באאוטפיישנט)?')) sendToOutpatient(t.dataset.toOutpatient); }
     });
     root.addEventListener('click', function (ev) {
-      const t = ev.target && ev.target.closest ? ev.target.closest('[data-contact-open],[data-contact-cancel],[data-task-resched],[data-task-done],[data-task-more],[data-task-cancel-form],[data-tasks-retry]') : null;
+      const t = ev.target && ev.target.closest ? ev.target.closest('[data-contact-open],[data-contact-cancel],[data-task-resched],[data-task-done],[data-task-more],[data-task-cancel-form],[data-tasks-retry],[data-catalog-copy]') : null;
       if (!t) return;
+      if (t.dataset.catalogCopy !== undefined) {
+        const field = t.form.elements.message;
+        const manual = function () { field.focus(); field.select(); toast('הנוסח מסומן להעתקה ידנית'); };
+        if (win.navigator.clipboard && win.navigator.clipboard.writeText) {
+          win.navigator.clipboard.writeText(field.value).then(function () { toast('הנוסח הועתק'); }, manual);
+        } else manual();
+        return;
+      }
       if (t.dataset.tasksRetry !== undefined) { reloadTasks(); return; }
       if (t.dataset.contactOpen) { const p = t.dataset.contactOpen.split(':'); return openContactPanel(p[0], p.slice(1).join(':'), t.dataset.taskId || ''); }
       if (t.dataset.contactCancel !== undefined) { const b = state.contact; state.contact = null; if (b) { state.drawer = state.drawer || { kind: b.kind, id: b.id, tab: 'overview' }; openDrawer(b.kind, b.id, true); } else closeDrawer(); return; }

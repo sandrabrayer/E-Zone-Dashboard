@@ -247,3 +247,39 @@ test('retry after interruption recovers a missing promised task from the same su
   const recovered = w.call(body); assert.equal(recovered.replayed,true); assert.equal(recovered.createdTasks.length,2);
   assert.equal(w.tasks().length,2); assert.equal(w.activity().filter(e=>e.kind==='contact_logged').length,1);
 });
+
+test('a catalogue sent manually is reported once, with its edition and recipient, even after a failed task write', () => {
+  const w = world();
+  const conversation = w.call({ action: 'logContact', submissionId: SID(90),
+    contact: { leadId: 'L1', outcome: 'spoke_follow_up', channel: 'phone' }, next: { promises: [
+      { code: 'catalog', assignee: 'ורד', dueDate: '2026-12-01' },
+      { code: 'documents', assignee: 'דנה', dueDate: '2026-12-02' }
+    ] } });
+  const [catalog, documents] = conversation.createdTasks;
+  const report = { edition: 'מהדורת תרגול 2', recipient: 'אשת קשר לדוגמה', confirmed: true };
+  const body = { action: 'completeTask', id: catalog.id, catalogReport: report };
+  const reports = () => w.activity().filter(e => JSON.parse(e.detailsJson || '{}').confirmation === 'staff_report');
+  for (const patch of [{ confirmed: false }, { edition: ' ' }, { recipient: '' }, { recipient: 'x'.repeat(61) }]) {
+    assert.equal(w.call({ ...body, catalogReport: { ...report, ...patch } }).error, 'bad_catalog_report');
+  }
+  assert.equal(w.call({ ...body, id: documents.id }).error, 'not_found');
+  assert.equal(w.call(body, ORTAL).ok, false);
+  assert.equal(reports().length, 0);
+  w.g.run("var saveCatalogTask = taskWriteRow_; taskWriteRow_ = function() { throw Error('simulated write interruption'); };");
+  try { w.call(body); } catch (_) {}
+  w.g.run('taskWriteRow_ = saveCatalogTask;');
+  assert.equal(w.tasks().find(t => t.id === catalog.id).status, 'open');
+  assert.equal(reports().length, 1);
+  // Another staff member cannot replace the version or recipient of the saved report.
+  assert.equal(w.call({ ...body, catalogReport: { ...report, recipient: 'אחרת' } }, DANA).error, 'not_open');
+  const retried = w.call(body, DANA);
+  assert.equal(retried.ok, true);
+  assert.equal(retried.replayed, true);
+  assert.equal(retried.task.doneBy, 'ורד');
+  assert.match(retried.task.outcome, /מהדורת תרגול 2/);
+  assert.equal(retried.task.doneAt, reports()[0].occurredAt);
+  assert.equal(w.tasks().find(t => t.id === documents.id).status, 'open');
+  assert.equal(reports().length, 1);
+  const details = JSON.parse(reports()[0].detailsJson);
+  assert.deepEqual([details.edition, details.recipient, details.channel], [report.edition, report.recipient, 'whatsapp']);
+});

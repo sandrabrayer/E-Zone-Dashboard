@@ -1231,6 +1231,7 @@ const CONTACT_SUMMARY_MAX = 1000;
 const CONTACT_WITH_MAX = 80;
 const CONTACT_REASON_MAX = 200;
 const TASK_MESSAGES = {
+  bad_catalog_report: 'יש לציין את הנמען ואת גרסת הקטלוג ולאשר שהשליחה בוואטסאפ בוצעה.',
   bad_promises: 'לכל התחייבות נדרשים אחראי ומועד. בחרי התחייבויות רק אחרי קשר עם המשפחה.',
   changed_promises: 'הקשר כבר נשמר עם פרטים אחרים. בדקי את הכרטיס לפני שינוי המשימות.',
   missing_task: 'חסרה משימה',
@@ -5026,10 +5027,50 @@ function taskMutate_(id, actor, actorName, apply, auditAction, eventKind, summar
 /* action=completeTask { id, outcome? } */
 function completeTask_(body, actorName, actor) {
   const b = body && typeof body === 'object' ? body : {};
+  if (Object.prototype.hasOwnProperty.call(b, 'catalogReport')) return completeCatalogTask_(b, actorName, actor);
   return taskMutate_(b.id, actor, actorName, function (t, nowIso) {
     t.status = 'done'; t.doneAt = nowIso; t.doneBy = actorName; t.outcome = taskText_(b.outcome, TASK_OUTCOME_MAX);
     return { ok: true, details: { outcome: t.outcome } };
   }, 'task_completed', 'task_completed', function (t) { return 'המשימה הושלמה: ' + t.title; });
+}
+
+/* Record the staff report before closing its task. If closing the task
+ * fails, it stays visible and a retry can finish the original report. */
+function completeCatalogTask_(body, actorName, actor) {
+  if (!actor || !actor.verified || actor.auth !== 'personal' || !Array.isArray(actor.roles) ||
+      actor.roles.indexOf('staff') < 0 || activityScope_(actor) === 'money') return taskNo_('forbidden');
+  const id = String(body.id || '');
+  if (!/^task-[0-9a-f]{32}-catalog$/.test(id)) return taskNo_('not_found');
+  const report = body.catalogReport || {};
+  const edition = typeof report.edition === 'string' ? report.edition.trim() : '';
+  const recipient = typeof report.recipient === 'string' ? report.recipient.trim() : '';
+  if (report.confirmed !== true || !edition || edition.length > 80 || !recipient || recipient.length > 60 ||
+      /[\u0000-\u001f\u007f]/.test(edition + recipient)) return taskNo_('bad_catalog_report');
+  const outcome = 'שליחה ידנית בוואטסאפ לפי דיווח הצוות\nגרסת הקטלוג — ' + edition + '\nנמען — ' + recipient;
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000) !== true) return lockBusy_('completeCatalogTask_');
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(TASKS_SHEET);
+    const current = sh && taskReadById_(sh, id);
+    const t = current && current.task;
+    if (!t || t.source !== 'contact' || t.kind !== 'admission' || !taskVisible_(t, actor)) return taskNo_('not_found');
+    if (t.status !== 'open') return t.status === 'done' && t.outcome === outcome ?
+      { ok: true, task: t, replayed: true } : taskNo_('not_open');
+    const now = new Date().toISOString();
+    const details = { summary: 'דווחה שליחת קטלוג בוואטסאפ · ' + edition + ' · נמען — ' + recipient,
+      edition: edition, recipient: recipient, channel: 'whatsapp', confirmation: 'staff_report', outcome: outcome };
+    const event = taskEvent_('task_completed', t, actorName, now, details, 'task_completed:' + id + ':catalog');
+    const activity = activityAppendRow_(activityRow_(event, now).row, true);
+    const original = activity.original;
+    t.status = 'done';
+    t.outcome = original ? JSON.parse(original.detailsJson).outcome : outcome;
+    t.doneAt = t.updatedAt = original ? new Date(original.occurredAt).toISOString() : now;
+    t.doneBy = t.updatedBy = original ? String(original.actorName) : actorName;
+    taskWriteRow_(sh, current.row, t);
+    logAudit_('task_completed', 'completeCatalogTask_', t.patientId || t.leadId, t.title, { id: id, updatedBy: t.doneBy });
+    if (t.outcome !== outcome) return taskNo_('not_open');
+    return { ok: true, task: t, replayed: !!original };
+  } finally { lock.releaseLock(); }
 }
 /* action=rescheduleTask { id, dueDate?, dueTime?, windowStart?, windowEnd?, reason? } — the
  * previous date goes to the Activity history; a reason is required when a PROMISED date

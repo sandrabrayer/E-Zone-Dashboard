@@ -6,6 +6,11 @@ a visit, or give a status update. Each gets its own chosen owner and due date. T
 Tasks sheet supplies the card and My Day. The activity record keeps the original plan when
 staff later complete, reschedule or reassign a task.
 
+The catalogue task offers a copyable WhatsApp message from the card and My Day.
+Staff attach the approved family edition in the existing business conversation.
+After sending, they record the edition and recipient. The dashboard timestamps the
+staff report and closes that task. Provider delivery receipts remain separate.
+
 The existing contact submission identifier and Apps Script lock protect replays. Each
 commitment has its own stable task identifier. All choices are validated before the first
 write. A retry can finish an interrupted write, but a changed plan cannot add tasks to a

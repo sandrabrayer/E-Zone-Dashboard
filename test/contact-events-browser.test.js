@@ -155,5 +155,26 @@ test('a mobile intake conversation with two promises creates separate tasks visi
     assert.equal(d.tasks().length,2);
     await desktop.locator('#crm-drawer [data-tab="activity"]').click();
     await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/לשלוח קטלוג.*מסמכים חסרים/).waitFor();
+    await phone.locator('#crm-drawer [data-tab="tasks"]').click();
+    const phoneTasks = phone.locator('#crm-drawer [data-pane="tasks"]');
+    await phoneTasks.getByRole('button', {name:'הכנה ותיעוד שליחת קטלוג'}).click();
+    const form = phoneTasks.locator('[data-form="catalog-report"]');
+    await form.getByRole('button', {name:'העתקת הנוסח'}).click();
+    assert.equal(d.tasks().filter(t => t.status === 'open').length, 2);
+    await form.getByRole('button', {name:'שמירת דיווח השליחה'}).click();
+    await form.getByText('יש לאשר שהשליחה בוצעה').waitFor();
+    await form.getByLabel('שם הקטלוג והגרסה שנשלחה').fill('קטלוג תרגול 2');
+    await form.getByLabel('למי נשלח הקטלוג').fill('פונה לדוגמה');
+    await form.getByRole('checkbox').check();
+    assert.equal(await phone.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),true);
+    await form.getByRole('button', {name:'שמירת דיווח השליחה'}).click();
+    await phoneTasks.getByRole('button', {name:'הכנה ותיעוד שליחת קטלוג'}).waitFor({state:'hidden'});
+    await phoneTasks.getByText('לבדוק אילו מסמכים חסרים',{exact:true}).waitFor();
+    await desktop.reload();
+    await desktop.locator('#crm-nav [data-area="leads"]').click();
+    await desktop.locator('[data-open-lead="test-card-a"]').first().click();
+    await desktop.locator('#crm-drawer [data-tab="activity"]').click();
+    await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/דווחה שליחת קטלוג בוואטסאפ.*קטלוג תרגול 2.*פונה לדוגמה/).waitFor();
+    assert.equal(d.tasks().filter(t=>t.status==='open').length,1);
   } finally { if (browser) await browser.close(); await s.close(); }
 });
