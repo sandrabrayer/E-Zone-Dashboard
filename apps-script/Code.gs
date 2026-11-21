@@ -17137,6 +17137,176 @@ function mwDigestCell_(v, col) {
 
 /* All houses' rows: { available, reason?, updatedAt, shifts, staff, therapistWeek }. */
 function mwReadTeamDigest_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    if (String(props.getProperty('MANAGERS_DIGEST_REQUIRE_MANIFEST') || '').trim() === 'true') {
+      return mwReadPublishedTeamDigest_(props);
+    }
+    return mwReadLegacyTeamDigest_();
+  } catch (e) {
+    return { available: false, reason: e && e.mwDigestReason || 'unreadable' };
+  }
+}
+
+/* Opt-in publication fence; see docs/architecture/MANAGERS-PUBLICATION-v1.md.
+ * A cache hit still needs two live manifest reads. No manifest metadata leaves
+ * this reader, and the legacy cache can never certify a strict-mode result. */
+function mwDigestPublicationFail_(reason) {
+  const error = new Error(reason);
+  error.mwDigestReason = reason;
+  throw error;
+}
+
+function mwDigestExactKeys_(value, keys) {
+  return !!value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join(',') === keys.slice().sort().join(',');
+}
+
+function mwDigestPublicationCell_(ss) {
+  const sheet = ss.getSheetByName('ManagersPublication');
+  return sheet ? sheet.getRange(1, 1).getValue() : null;
+}
+
+function mwDigestPublication_(raw) {
+  if (raw === null || raw === undefined || raw === '') mwDigestPublicationFail_('pending');
+  if (typeof raw !== 'string' || raw.length > 12000) mwDigestPublicationFail_('contract_mismatch');
+  let manifest;
+  try { manifest = JSON.parse(raw); } catch (e) { mwDigestPublicationFail_('contract_mismatch'); }
+  const idOk = manifest && typeof manifest.publicationId === 'string' && /^[A-Za-z0-9_-]{16,100}$/.test(manifest.publicationId);
+  if (mwDigestExactKeys_(manifest, ['schema', 'state', 'publicationId']) &&
+      manifest.schema === 'managers-house-v1' && manifest.state === 'pending' && idOk) {
+    mwDigestPublicationFail_('pending');
+  }
+  if (!mwDigestExactKeys_(manifest, ['schema', 'state', 'publicationId', 'publishedAt', 'source', 'tables']) ||
+      manifest.schema !== 'managers-house-v1' || manifest.state !== 'ready' || !idOk) {
+    mwDigestPublicationFail_('contract_mismatch');
+  }
+  const at = typeof manifest.publishedAt === 'string' ? Date.parse(manifest.publishedAt) : NaN;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(manifest.publishedAt) ||
+      !Number.isFinite(at) || new Date(at).toISOString() !== manifest.publishedAt || at > Date.now() + 300000) {
+    mwDigestPublicationFail_('contract_mismatch');
+  }
+  const source = manifest.source;
+  if (!mwDigestExactKeys_(source, ['revision', 'token']) || !Number.isSafeInteger(source.revision) ||
+      source.revision < 0 || source.revision % 2 !== 0 || typeof source.token !== 'string' || !/^[a-f0-9]{64}$/.test(source.token)) {
+    mwDigestPublicationFail_('contract_mismatch');
+  }
+  const keys = Object.keys(MW_DIGEST_TABS);
+  if (!mwDigestExactKeys_(manifest.tables, keys)) mwDigestPublicationFail_('contract_mismatch');
+  keys.forEach(function (key) {
+    const table = manifest.tables[key];
+    if (!mwDigestExactKeys_(table, ['rows', 'columns', 'sha256']) ||
+        !Number.isInteger(table.rows) || table.rows < 0 || table.rows > 50000 ||
+        !Number.isInteger(table.columns) || table.columns < 1 || table.columns > 64 ||
+        typeof table.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(table.sha256)) {
+      mwDigestPublicationFail_('contract_mismatch');
+    }
+  });
+  return manifest;
+}
+
+function mwDigestSha256_(text) {
+  const bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8);
+  if (!bytes || bytes.length !== 32) throw new Error('digest_unavailable');
+  return Array.prototype.map.call(bytes, function (byte) {
+    if (!Number.isInteger(byte) || byte < -128 || byte > 255) throw new Error('digest_unavailable');
+    return ('0' + ((byte + 256) % 256).toString(16)).slice(-2);
+  }).join('');
+}
+
+function mwDigestCanonicalCell_(value) {
+  if (value === null || value === undefined) return ['s', ''];
+  if (typeof value === 'string') return ['s', value];
+  if (typeof value === 'number' && Number.isFinite(value)) return ['n', String(value)];
+  if (typeof value === 'boolean') return ['b', value];
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    let at;
+    try { at = Date.prototype.getTime.call(value); } catch (e) { mwDigestPublicationFail_('contract_mismatch'); }
+    if (Number.isFinite(at)) return ['d', new Date(at).toISOString()];
+  }
+  mwDigestPublicationFail_('contract_mismatch');
+}
+
+function mwDigestCertifiedGrid_(sheet, table, def) {
+  if (!sheet) mwDigestPublicationFail_('pending');
+  const rows = sheet.getLastRow();
+  const columns = sheet.getLastColumn();
+  if (rows < 1 || columns < 1) mwDigestPublicationFail_('pending');
+  if (rows !== table.rows + 1 || columns !== table.columns) mwDigestPublicationFail_('contract_mismatch');
+  const grid = sheet.getRange(1, 1, rows, columns).getValues();
+  if (!Array.isArray(grid) || grid.length !== rows || grid.some(function (row) {
+    return !Array.isArray(row) || row.length !== columns;
+  })) mwDigestPublicationFail_('contract_mismatch');
+  const head = grid[0];
+  if (Array.from(head).some(function (name, index) {
+    return typeof name !== 'string' || !name.trim() || head.indexOf(name) !== index;
+  }) || def.cols.some(function (name) { return head.indexOf(name) < 0; })) {
+    mwDigestPublicationFail_('contract_mismatch');
+  }
+  const canonical = grid.map(function (row) { return Array.from(row, mwDigestCanonicalCell_); });
+  if (mwDigestSha256_(JSON.stringify(canonical)) !== table.sha256) mwDigestPublicationFail_('contract_mismatch');
+  return grid;
+}
+
+function mwDigestCertifiedCache_(entry, raw, manifest) {
+  if (!mwDigestExactKeys_(entry, ['manifest', 'data']) || entry.manifest !== raw ||
+      !mwDigestExactKeys_(entry.data, ['available', 'updatedAt', 'shifts', 'staff', 'therapistWeek']) ||
+      entry.data.available !== true || entry.data.updatedAt !== manifest.publishedAt) return false;
+  return Object.keys(MW_DIGEST_TABS).every(function (key) {
+    const def = MW_DIGEST_TABS[key];
+    const fields = def.cols.concat(def.optional || []);
+    const rows = entry.data[key];
+    return Array.isArray(rows) && rows.length <= manifest.tables[key].rows && rows.every(function (row) {
+      return mwDigestExactKeys_(row, fields) && fields.every(function (field) { return typeof row[field] === 'string'; });
+    });
+  });
+}
+
+function mwReadPublishedTeamDigest_(props) {
+  const id = String(props.getProperty(MANAGERS_DIGEST_SHEET_PROP) || '').trim();
+  if (!id) mwDigestPublicationFail_('not_configured');
+  const ss = SpreadsheetApp.openById(id);
+  if (!ss) mwDigestPublicationFail_('unreadable');
+  const raw = mwDigestPublicationCell_(ss);
+  const manifest = mwDigestPublication_(raw);
+  const cacheKey = 'mw:team-digest:manifest:v1:' + mwDigestSha256_(id + '\n' + raw);
+  const cache = CacheService.getScriptCache();
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    const entry = JSON.parse(cached);
+    if (!mwDigestCertifiedCache_(entry, raw, manifest)) mwDigestPublicationFail_('contract_mismatch');
+    if (mwDigestPublicationCell_(ss) !== raw) mwDigestPublicationFail_('publication_changed');
+    return entry.data;
+  }
+  const keys = Object.keys(MW_DIGEST_TABS);
+  const grids = {};
+  keys.forEach(function (key) {
+    const def = MW_DIGEST_TABS[key];
+    grids[key] = mwDigestCertifiedGrid_(ss.getSheetByName(def.tab), manifest.tables[key], def);
+  });
+  if (mwDigestPublicationCell_(ss) !== raw) mwDigestPublicationFail_('publication_changed');
+  const out = { available: true, updatedAt: manifest.publishedAt };
+  keys.forEach(function (key) {
+    const def = MW_DIGEST_TABS[key];
+    const head = grids[key][0];
+    out[key] = grids[key].slice(1).map(function (row) {
+      const item = {};
+      def.cols.concat(def.optional || []).forEach(function (col) {
+        const index = head.indexOf(col);
+        const value = index < 0 ? '' : row[index];
+        item[col] = mwDigestCell_(Object.prototype.toString.call(value) === '[object Date]' ?
+          new Date(Date.prototype.getTime.call(value)) : value, col);
+      });
+      return item;
+    }).filter(function (item) { return item.house; });
+  });
+  const serialized = JSON.stringify({ manifest: raw, data: out });
+  if (serialized.length <= READ_CACHE_MAX_CHARS) cache.put(cacheKey, serialized, MW_DIGEST_CACHE_TTL_S);
+  return out;
+}
+
+/* Original compatibility reader: unchanged when the manifest flag is off. */
+function mwReadLegacyTeamDigest_() {
   const hit = cacheGetJson_(MW_DIGEST_CACHE_KEY);
   if (hit && hit.available) return hit;
   const id = String(PropertiesService.getScriptProperties().getProperty(MANAGERS_DIGEST_SHEET_PROP) || '').trim();
