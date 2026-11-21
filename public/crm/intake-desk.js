@@ -51,6 +51,13 @@
   }
   function showHistory(box, record, query) {
     box.replaceChildren();
+    if (record.incoming) {
+      const current = record.incoming;
+      const label = current.channel === 'whatsapp' ? 'הודעת וואטסאפ נכנסת' :
+        ({ringing:'צלצול במרכזייה',missed:'שיחה שלא נענתה',answered:'שיחה שנענתה במרכזייה'})[current.status];
+      const source = el('p', (label || 'שיחה נכנסת') + ' · מספר שמסתיים ב־');
+      const ending = el('bdi', current.ending); ending.dir = 'ltr'; source.append(ending); box.append(source);
+    }
     const last = record.prior;
     if (['history','number_history'].includes(record.match) && last) {
       box.append(el('strong', record.match === 'history' ? 'פנייה חוזרת · קשר קודם בכרטיס' : 'קשר קודם עם המספר הזה'));

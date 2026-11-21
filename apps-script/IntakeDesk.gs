@@ -69,6 +69,7 @@ function deskCaller_(p) {
   if (p.eventId && (!event || event.resolution === 'dismissed' || event.direction !== 'in')) return { ok: true, match: 'none' };
   const phone = event ? event.phone : commPhone_(typeof p.phone === 'string' ? p.phone : '');
   if (!phone) return { ok: true, match: 'unidentified' };
+  const incoming = event ? { incoming: {channel:event.channel, status:event.status, ending:phone.slice(-4)} } : {};
   const roster = commRoster_();
   const lead = commUniqueLead_(roster, phone);
   const before = event ? event.occurredAt : new Date(Date.now() + 1).toISOString();
@@ -80,13 +81,14 @@ function deskCaller_(p) {
     // An earlier answered call may predate the first lead card. It is evidence
     // about this number only and never grants access to a card or a task.
     const fromNumber = deskPrevious_(null, phone, before, rows);
-    if (fromNumber) return p.verified === true ? { ok: true, match: 'number_history', prior: fromNumber } : { ok: true, match: 'number_verify' };
+    if (fromNumber) return Object.assign(p.verified === true ? { ok: true, match: 'number_history', prior: fromNumber } :
+      { ok: true, match: 'number_verify' }, incoming);
     return { ok: true, match: lead ? 'no_history' : 'none' };
   }
   const proof = event && event.resolution === 'linked' && rows.some(function (r) {
     return r.id === (event.grantId || event.id) && r.phone === phone && r.leadId === lead.id && r.remember === '1' && !r.forgottenAt;
   });
-  if (!proof && p.verified !== true) return { ok: true, match: 'verify' };
+  if (!proof && p.verified !== true) return Object.assign({ ok: true, match: 'verify' }, incoming);
   const tasks = tasksSheetRead_().map(taskOut_).filter(function (t) {
     return t.status === 'open' && t.leadId === lead.id && t.money !== '1';
   }).sort(function (a, b) { return (a.dueDate || a.windowStart || '9999').localeCompare(b.dueDate || b.windowStart || '9999') || a.id.localeCompare(b.id); });
@@ -96,8 +98,8 @@ function deskCaller_(p) {
     const code = Object.keys(INTAKE_PROMISES).find(function (key) { return t.id.endsWith('-' + key); });
     if (code && t.title === INTAKE_PROMISES[code].title) taskLabel = INTAKE_PROMISES[code].title;
   } else if (t && t.source === 'system:pbx' && t.kind === 'call') taskLabel = 'לחזור לשיחה שלא נענתה';
-  return { ok: true, match: 'history', leadId: lead.id, prior: prior, openCount: tasks.length,
-    next: t ? { title: taskLabel, owner: t.assignee, due: t.dueDate || t.windowStart } : null };
+  return Object.assign({ ok: true, match: 'history', leadId: lead.id, prior: prior, openCount: tasks.length,
+    next: t ? { title: taskLabel, owner: t.assignee, due: t.dueDate || t.windowStart } : null }, incoming);
 }
 
 function familyDeskDate_(v) {

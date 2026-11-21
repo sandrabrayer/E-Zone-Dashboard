@@ -83,7 +83,7 @@ test('an answered but unassigned call to Vered is visible as number history even
   const id = 'c'.repeat(32), now = new Date(Date.now() - 100).toISOString();
   d.receive({objectRef:id,status:'ringing',occurredAt:now,observedAt:now});
   const query = {op:'lookup',eventId:'phone-'+id};
-  assert.deepEqual(call(d,query), {ok:true,match:'number_verify'});
+  assert.deepEqual(call(d,query), {ok:true,match:'number_verify',incoming:{channel:'phone',status:'ringing',ending:'0001'}});
   const result = call(d,{...query,verified:true});
   assert.equal(result.match,'number_history'); assert.equal(result.prior.by,'ורד');
   assert.equal(result.prior.at,before); assert.equal(result.leadId,undefined); assert.equal(result.next,undefined);

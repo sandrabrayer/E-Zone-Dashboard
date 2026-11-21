@@ -210,6 +210,12 @@ test('Sandra sees Vered’s previous contact on mobile and can hand a private fa
     const alert = phone.locator('[data-desk-alerts]');
     await alert.getByRole('button', {name:/בדקתי מי הפונה/}).waitFor();
     assert.doesNotMatch(await alert.innerText(), /ורד|קטלוג/);
+    assert.match(await alert.innerText(), /צלצול במרכזייה.*0001/);
+    await phone.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    assert.equal(await alert.evaluate(e => {
+      const b = e.getBoundingClientRect();
+      return getComputedStyle(e).position === 'fixed' && b.bottom <= innerHeight && b.top >= 0;
+    }), true);
     await alert.getByRole('button', {name:/בדקתי מי הפונה/}).click();
     await alert.getByText(/לשלוח קטלוג/).waitFor();
     assert.match(await alert.innerText(), /ורד/);

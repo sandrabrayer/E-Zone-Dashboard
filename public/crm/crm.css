@@ -515,3 +515,15 @@ details.act.danger > summary { color: var(--bad); }
 .desk-case p, .desk-alert p { margin: .3rem 0; }
 .desk-case small { display: block; }
 .desk-alert { background: #e9f5f2; color: #183e3c; }
+
+/* Show an incoming caller even when the staff member is down the lead list. */
+[data-desk-alerts]:not(:empty) {
+  position: fixed;
+  inset-block-end: max(1rem, env(safe-area-inset-bottom));
+  inset-inline-end: 1rem;
+  z-index: 45;
+  inline-size: min(24rem, calc(100vw - 2rem));
+  max-block-size: min(48dvh, 24rem);
+  overflow: auto;
+}
+.desk-alert { margin: .35rem; box-shadow: 0 3px 14px #1749402e; }
