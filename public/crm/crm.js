@@ -2963,6 +2963,7 @@
    * (a record with no direction — also every record written before the field existed). */
   const CONTACT_DIRECTIONS = [{ id: 'out', label: 'שיחה יוצאת' }, { id: 'in', label: 'שיחה נכנסת' }, { id: 'note', label: 'תיעוד שיחה' }];
   const CONTACT_DIRECTION_CHIPS = { out: 'ok', in: 'today', note: 'wait' };
+  const CRM_BOUNCE_KEY = 'ezone:crm-bounce-at';   // mirrors public/app.js
   const TAB_GO_ALLOWED = ['overview', 'tasks', 'activity', 'meetings'];   // the card tabs an in-card link may open
   const CONTACT_DIR_TEXT = { who: { out: 'מי ביצע', in: 'מי קיבל/ה את השיחה', note: 'מי תיעד/ה' }, withWhom: { out: 'עם מי', in: 'מי התקשר/ה', note: 'עם מי' } };
   /* Outcomes that only describe OUR attempt — not offered for an incoming call. */
@@ -3922,6 +3923,9 @@
   ];
 
   function boot(win, doc) {
+    // The CRM is up: clear the classic page's hand-over marker (app.js CRM_BOUNCE_KEY, CHANGELOG-crm-cross-site-landing.md),
+    // so the next outside link is handed over too. The marker only ever stops a bounce that did NOT reach this page.
+    try { win.sessionStorage.removeItem(CRM_BOUNCE_KEY); } catch (_) { /* no storage: nothing to clear */ }
     // This map is deliberately session-memory only; reload requires a source
     // read before any new write after an uncertain outcome.
     const pendingLeadFlags = Object.create(null);

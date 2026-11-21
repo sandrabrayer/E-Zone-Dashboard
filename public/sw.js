@@ -454,7 +454,10 @@
 // v158 → v159: the contact log's three kinds (שיחה יוצאת / שיחה נכנסת / תיעוד שיחה), «ביטול תיעוד»,
 // «מה הלאה» on the card and «היום» as the team page (CHANGELOG-crm-contact-three-states.md).
 // crm.js, crm.css and crm.html changed. From the live v158; monotonic.
-var CACHE_VERSION = 'v159';
+// v159 → v160: the classic page hands a signed-in CRM user over to the CRM when it was reached
+// through a link on another site (CHANGELOG-crm-cross-site-landing.md). app.js and crm.js changed.
+// From the live v159; monotonic.
+var CACHE_VERSION = 'v160';
 var CACHE_NAME = 'ezone-dashboard-' + CACHE_VERSION;
 
 // App-shell / static assets pre-cached on install. The shell HTML is included
