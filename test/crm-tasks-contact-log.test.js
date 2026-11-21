@@ -199,7 +199,7 @@ test('one WhatsApp contact records separately owned and dated promises; retries 
   const result = w.call(body);
   assert.equal(result.ok, true);
   assert.deepEqual(result.createdTasks.map(t => [t.title,t.assignee,t.dueDate,t.money]), [
-    ['להכין קטלוג מאושר למשפחה','ורד','2026-11-22',''], ['לבדוק אילו מסמכים חסרים','דנה','2026-11-24','']
+    ['לשלוח קטלוג','ורד','2026-11-22',''], ['לבדוק אילו מסמכים חסרים','דנה','2026-11-24','']
   ]);
   assert.ok(result.createdTasks.every(t => t.contactEventId === result.event.eventId));
   const stored = w.activity().find(e => e.kind === 'contact_logged');

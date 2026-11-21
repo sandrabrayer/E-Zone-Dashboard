@@ -2968,14 +2968,14 @@
     { id: 'bad_contact_details', label: 'פרטי הקשר אינם תקינים' }, { id: 'stop_contact', label: 'התבקשה הפסקת פניות' }];
   const CONTACT_CHANNELS = [{ id: 'phone', label: 'טלפון' }, { id: 'whatsapp', label: 'וואטסאפ' }, { id: 'sms', label: 'SMS' }, { id: 'email', label: 'דוא״ל' }, { id: 'in_person', label: 'פנים אל פנים' }, { id: 'other', label: 'אחר' }];
   const INTAKE_PROMISES = [
-    { code: 'catalog', title: 'להכין קטלוג מאושר למשפחה' },
+    { code: 'catalog', title: 'לשלוח קטלוג' },
     { code: 'documents', title: 'לבדוק אילו מסמכים חסרים' },
     { code: 'visit', title: 'לתאם ביקור עם המשפחה' },
     { code: 'status', title: 'לחזור למשפחה עם עדכון סטטוס' }
   ];
   /* «קשר הבא»: no automatic default — the user picks (spec §8). */
   const NEXT_CHOICES = [{ id: 'd1', label: 'מחר', days: 1 }, { id: 'd3', label: 'בעוד 3 ימים', days: 3 }, { id: 'd7', label: 'בעוד שבוע', days: 7 }, { id: 'd14', label: 'בעוד שבועיים', days: 14 },
-    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'promises', label: 'התחייבויות למשפחה' }, { id: 'none', label: 'ללא משימת המשך' }];
+    { id: 'd30', label: 'בעוד חודש', days: 30 }, { id: 'days', label: 'בעוד X ימים' }, { id: 'date', label: 'תאריך ושעה' }, { id: 'week', label: 'במהלך שבוע נבחר' }, { id: 'promises', label: 'משימות המשך לשיחה' }, { id: 'none', label: 'ללא משימת המשך' }];
   const TASK_KINDS = [{ id: 'call', label: 'שיחה' }, { id: 'meeting', label: 'פגישה' }, { id: 'collection', label: 'גבייה', money: true }, { id: 'admission', label: 'קליטה' },
     { id: 'discharge', label: 'שחרור' }, { id: 'continuity', label: 'המשך טיפול' }, { id: 'review', label: 'בירור' }, { id: 'other', label: 'אחר' }];
   const TASK_KIND_LABELS = {}; TASK_KINDS.forEach(function (k) { TASK_KIND_LABELS[k.id] = k.label; });

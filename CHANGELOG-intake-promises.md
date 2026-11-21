@@ -1,7 +1,7 @@
 # Intake commitments on a phone call or WhatsApp conversation
 
-Staff can select **התחייבויות למשפחה** in the existing contact form and record up to four
-commitments in one save: prepare an approved catalogue, check missing documents, coordinate
+Staff can select **משימות המשך לשיחה** in the existing contact form and record up to four
+commitments in one save: send the catalogue, check missing documents, coordinate
 a visit, or give a status update. Each gets its own chosen owner and due date. The ordinary
 Tasks sheet supplies the card and My Day. The activity record keeps the original plan when
 staff later complete, reschedule or reassign a task.

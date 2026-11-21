@@ -1221,7 +1221,7 @@ const CONTACT_OUTCOMES = ['spoke_follow_up', 'no_answer', 'call_back_later', 'aw
 const CONTACT_CHANNELS = ['phone', 'whatsapp', 'sms', 'email', 'in_person', 'other'];
 // Operational promises the intake team can record together. All are non-financial staff work.
 const INTAKE_PROMISES = {
-  catalog: { kind: 'admission', title: 'להכין קטלוג מאושר למשפחה' },
+  catalog: { kind: 'admission', title: 'לשלוח קטלוג' },
   documents: { kind: 'review', title: 'לבדוק אילו מסמכים חסרים' },
   visit: { kind: 'admission', title: 'לתאם ביקור עם המשפחה' },
   status: { kind: 'call', title: 'לחזור למשפחה עם עדכון סטטוס' }

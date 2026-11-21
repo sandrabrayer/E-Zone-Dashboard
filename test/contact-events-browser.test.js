@@ -134,7 +134,8 @@ test('a mobile intake conversation with two promises creates separate tasks visi
     const f = phone.locator('#crm-drawer form[data-form="contact"]');
     await f.locator('[name="channel"]').selectOption('whatsapp');
     await f.locator('[name="outcome"]').selectOption('spoke_follow_up');
-    await f.locator('[name="next"][value="promises"]').check();
+    await f.getByRole('radio',{name:'משימות המשך לשיחה',exact:true}).check();
+    await f.getByRole('checkbox',{name:'לשלוח קטלוג',exact:true}).waitFor();
     const date = await f.locator('[name="when"]').inputValue();
     for (const [code,owner] of [['catalog','ורד'],['documents','דנה']]) {
       await f.locator('[name="nextPick_'+code+'"]').check();
@@ -149,10 +150,10 @@ test('a mobile intake conversation with two promises creates separate tasks visi
     await desktop.locator('[data-open-lead="test-card-a"]').first().click();
     await desktop.locator('#crm-drawer [data-tab="tasks"]').click();
     const pane = desktop.locator('#crm-drawer [data-pane="tasks"]');
-    await pane.getByText('להכין קטלוג מאושר למשפחה',{exact:true}).waitFor();
+    await pane.getByText('לשלוח קטלוג',{exact:true}).waitFor();
     await pane.getByText('לבדוק אילו מסמכים חסרים',{exact:true}).waitFor();
     assert.equal(d.tasks().length,2);
     await desktop.locator('#crm-drawer [data-tab="activity"]').click();
-    await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/קטלוג מאושר למשפחה.*מסמכים חסרים/).waitFor();
+    await desktop.locator('#crm-drawer [data-pane="activity"]').getByText(/לשלוח קטלוג.*מסמכים חסרים/).waitFor();
   } finally { if (browser) await browser.close(); await s.close(); }
 });

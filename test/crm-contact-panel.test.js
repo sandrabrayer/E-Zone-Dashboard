@@ -18,7 +18,7 @@ test('lists mirror Code.gs: outcomes, channels, kinds (ids and order); the next-
   assert.deepEqual(core.CONTACT_OUTCOMES.map((o) => o.id), Array.from(g.run('CONTACT_OUTCOMES')));
   assert.deepEqual(core.CONTACT_CHANNELS.map((o) => o.id), Array.from(g.run('CONTACT_CHANNELS')));
   assert.deepEqual(core.TASK_KINDS.map((o) => o.id), Array.from(g.run('TASK_KINDS')));
-  assert.deepEqual(core.NEXT_CHOICES.map((n) => n.label), ['מחר', 'בעוד 3 ימים', 'בעוד שבוע', 'בעוד שבועיים', 'בעוד חודש', 'בעוד X ימים', 'תאריך ושעה', 'במהלך שבוע נבחר', 'התחייבויות למשפחה', 'ללא משימת המשך']);
+  assert.deepEqual(core.NEXT_CHOICES.map((n) => n.label), ['מחר', 'בעוד 3 ימים', 'בעוד שבוע', 'בעוד שבועיים', 'בעוד חודש', 'בעוד X ימים', 'תאריך ושעה', 'במהלך שבוע נבחר', 'משימות המשך לשיחה', 'ללא משימת המשך']);
   assert.ok(!/name="next"[^>]*checked/.test(CRM_SRC), 'no radio is pre-checked — the user chooses (spec §8)');
   assert.ok(!/>בוצע</.test(CRM_SRC), 'no «בוצע» button on a call task — a call closes through the contact log only (data-task-done is drawn for non-call kinds only)');
   assert.match(CRM_SRC, /isCall \? '<button[^']*data-contact-open/, 'a call row offers «תיעוד שיחה», not a completion');
